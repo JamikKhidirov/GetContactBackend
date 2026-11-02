@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GetContact API — Swagger UI</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📞</text></svg>" />
+  <link rel="stylesheet" href="/docs/assets/swagger-ui.css" />
+  <style>
+    :root { --gc-bg: #070b14; --gc-card: #0d1524; --gc-accent: #22d3ee; }
+    body { margin: 0; background: var(--gc-bg); }
+    .topbar { display: none; }
+    #swagger-ui { max-width: 1280px; margin: 0 auto; padding: 16px; }
+    .swagger-ui .info .title, .swagger-ui .info p, .swagger-ui .info li,
+    .swagger-ui .opblock-tag, .swagger-ui .opblock .opblock-summary-description { color: #e5eefc; }
+    .swagger-ui .scheme-container { background: var(--gc-card); box-shadow: none; border-radius: 12px; }
+    .swagger-ui .opblock-tag { border-bottom-color: #1e293b; }
+    .swagger-ui .info { margin: 24px 0; }
+    .swagger-ui .info .title small { background: var(--gc-accent); }
+    .swagger-ui .btn.authorize { border-color: var(--gc-accent); color: var(--gc-accent); }
+    .swagger-ui .btn.authorize svg { fill: var(--gc-accent); }
+    .swagger-ui select, .swagger-ui input[type=text] { background: #0f172a; color: #e5eefc; border-color: #334155; }
+    .swagger-ui .opblock.opblock-get .opblock-summary-method { background: #0284c7; }
+    .swagger-ui .opblock.opblock-post .opblock-summary-method { background: #059669; }
+    .swagger-ui .opblock.opblock-patch .opblock-summary-method { background: #d97706; }
+    .swagger-ui .opblock.opblock-delete .opblock-summary-method { background: #dc2626; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="/docs/assets/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        url: '/openapi.yaml',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        persistAuthorization: true,
+        displayRequestDuration: true,
+        filter: true,
+        tryItOutEnabled: true,
+        presets: [SwaggerUIBundle.presets.apis],
+      });
+    };
+  </script>
+</body>
+</html>

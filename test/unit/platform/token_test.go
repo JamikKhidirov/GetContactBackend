@@ -1,0 +1,48 @@
+package platform_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/getcontact/backend/internal/domain"
+	"github.com/getcontact/backend/internal/platform"
+	"github.com/google/uuid"
+)
+
+func TestTokenIssueAndParse(t *testing.T) {
+	secret := "0123456789abcdef0123456789abcdef"
+	tm, err := platform.NewTokenManager(secret, "test-issuer", time.Minute)
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	uid := uuid.New()
+	token, jti, exp, err := tm.Issue(uid, domain.RoleAdmin)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if jti == "" || exp.Before(time.Now()) {
+		t.Fatal("invalid issue metadata")
+	}
+	claims, err := tm.Parse(token)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if claims.UserID() != uid || claims.Role != string(domain.RoleAdmin) || claims.ID != jti {
+		t.Fatalf("claims mismatch: %+v", claims)
+	}
+
+	other, _ := platform.NewTokenManager("ffffffffffffffffffffffffffffffff", "test-issuer", time.Minute)
+	if _, err := other.Parse(token); err == nil {
+		t.Fatal("token accepted with a different secret")
+	}
+
+	expired, _ := platform.NewTokenManager(secret, "test-issuer", -time.Minute)
+	expiredToken, _, _, _ := expired.Issue(uid, domain.RoleUser)
+	if _, err := tm.Parse(expiredToken); err == nil {
+		t.Fatal("expired token accepted")
+	}
+
+	if _, err := tm.Parse(token + "x"); err == nil {
+		t.Fatal("tampered token accepted")
+	}
+}

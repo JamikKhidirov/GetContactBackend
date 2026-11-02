@@ -1,0 +1,110 @@
+groups:
+  - name: getcontact-availability
+    interval: 30s
+    rules:
+      - alert: GetContactApiDown
+        expr: up{job="getcontact-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "GetContact API is down"
+          description: "Prometheus has failed to scrape the API for more than 2 minutes."
+
+      - alert: GetContactWorkerDown
+        expr: up{job="getcontact-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: worker
+        annotations:
+          summary: "GetContact worker is down"
+          description: "Kafka consumer / derived-data worker is not scrapeable."
+
+      - alert: GetContactHigh5xxRate
+        expr: |
+          sum(rate(getcontact_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(getcontact_http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High 5xx error ratio"
+          description: "More than 5% of API requests have failed for 5 minutes."
+
+      - alert: GetContactHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API p95 latency above 1s"
+          description: "p95 HTTP latency has exceeded 1 second for 5 minutes."
+
+      - alert: GetContactNoTraffic
+        expr: sum(rate(getcontact_http_requests_total[10m])) == 0
+        for: 10m
+        labels:
+          severity: info
+          component: api
+        annotations:
+          summary: "No API traffic"
+          description: "The API has received no requests for 10 minutes."
+
+  - name: getcontact-dependencies
+    interval: 30s
+    rules:
+      - alert: GetContactCacheHitRateLow
+        expr: |
+          sum(rate(getcontact_cache_operations_total{operation="get",result="hit"}[15m]))
+          /
+          clamp_min(sum(rate(getcontact_cache_operations_total{operation="get"}[15m])), 0.001)
+          < 0.5
+        for: 15m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "Caller-ID cache hit rate below 50%"
+          description: "Redis may be evicting too aggressively or lookups are too diverse."
+
+      - alert: GetContactKafkaPublishErrors
+        expr: increase(getcontact_kafka_events_total{direction="publish",result="error"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Kafka publish errors detected"
+          description: "Events are failing to reach Kafka; check broker health and the DLQ."
+
+      - alert: GetContactDBLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(getcontact_db_query_duration_seconds_bucket[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: postgres
+        annotations:
+          summary: "Database p95 query latency above 500ms"
+          description: "Repository calls are slow; inspect indexes and connection pool saturation."
+
+      - alert: GetContactSpamReportSurge
+        expr: increase(getcontact_business_spam_reports_total[10m]) > 500
+        for: 1m
+        labels:
+          severity: info
+          component: api
+        annotations:
+          summary: "Unusual spam-report volume"
+          description: "More than 500 reports in 10 minutes; check for abuse."

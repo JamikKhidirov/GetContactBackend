@@ -1,0 +1,124 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: getcontact-api
+  namespace: getcontact
+  labels:
+    app.kubernetes.io/part-of: getcontact
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [getcontact]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: getcontact-worker
+  namespace: getcontact
+  labels:
+    app.kubernetes.io/part-of: getcontact
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [getcontact]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: getcontact-alerts
+  namespace: getcontact
+  labels:
+    app.kubernetes.io/part-of: getcontact
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: getcontact.rules
+      interval: 30s
+      rules:
+        - alert: GetContactTargetDown
+          expr: up{namespace="getcontact"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GetContact target {{ $labels.pod }} is down"
+            description: "Prometheus cannot scrape a GetContact pod for 2 minutes."
+
+        - alert: GetContactHigh5xxRate
+          expr: |
+            sum(rate(getcontact_http_requests_total{namespace="getcontact",status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(getcontact_http_requests_total{namespace="getcontact"}[5m])), 0.001)
+            > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GetContact 5xx rate above 5%"
+            description: "Check API logs, database and Redis health."
+
+        - alert: GetContactHighLatencyP95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(getcontact_http_request_duration_seconds_bucket{namespace="getcontact"}[5m]))
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GetContact p95 latency above 1s"
+
+        - alert: GetContactNoTraffic
+          expr: sum(rate(getcontact_http_requests_total{namespace="getcontact"}[10m])) == 0
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "No GetContact API traffic for 10 minutes"
+
+        - alert: GetContactCacheHitRateLow
+          expr: |
+            sum(rate(getcontact_cache_operations_total{namespace="getcontact",operation="get",result="hit"}[15m]))
+            /
+            clamp_min(sum(rate(getcontact_cache_operations_total{namespace="getcontact",operation="get"}[15m])), 0.001)
+            < 0.5
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Caller-ID cache hit rate below 50%"
+
+        - alert: GetContactKafkaPublishErrors
+          expr: increase(getcontact_kafka_events_total{namespace="getcontact",direction="publish",result="error"}[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Kafka publish errors detected"
+
+        - alert: GetContactDBLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(getcontact_db_query_duration_seconds_bucket{namespace="getcontact"}[5m]))
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Database p95 query latency above 500ms"

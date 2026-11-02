@@ -1,0 +1,1455 @@
+openapi: 3.0.3
+info:
+  title: GetContact API
+  version: 1.0.0
+  description: |
+    **GetContact** — бэкенд определения номеров: профили номеров, community-теги,
+    спам-репорты, личная телефонная книга и админ-панель.
+
+    ## Возможности
+    - JWT access/refresh с ротацией refresh-токенов и blacklist при logout.
+    - Публичный caller-ID lookup с кэшем Redis и счётчиком просмотров.
+    - Community-теги и спам-репорты с пересчётом spam score 0..100.
+    - Личная телефонная книга с bulk-import до 500 контактов.
+    - Админ-статистика, блокировка пользователей, модерация репортов.
+    - Kafka-события, Prometheus-метрики, Grafana-дашборд.
+
+    ## Авторизация
+    1. `POST /api/v1/auth/register` или `POST /api/v1/auth/login`.
+    2. Возьмите `data.tokens.access_token` и передайте заголовок
+       `Authorization: Bearer <access_token>`.
+    3. Access token живёт 15 минут, refresh token — 30 дней и одноразовый.
+    4. `POST /api/v1/auth/logout` отзывает refresh и заносит access JTI в Redis blacklist.
+
+    ## Формат ответов
+    Успех: `{ "data": ... }`, списки дополнительно содержат `meta`.
+    Ошибка: `{ "error": { "code", "message", "details", "request_id" } }`.
+
+    ## Коды ошибок
+    `VALIDATION_ERROR` (422), `UNAUTHORIZED` (401), `FORBIDDEN` (403),
+    `NOT_FOUND` (404), `CONFLICT` (409), `RATE_LIMITED` (429),
+    `INTERNAL_ERROR` (500), `REQUEST_TIMEOUT` (504).
+  contact:
+    name: GetContact Platform Team
+    email: api@getcontact.local
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose
+  - url: https://api.getcontact.example
+    description: Production
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+    description: Живость, readiness, версия, метрики и документация
+  - name: Auth
+    description: Регистрация, вход, refresh-ротация и logout
+  - name: Users
+    description: Профиль текущего пользователя
+  - name: Contacts
+    description: Личная телефонная книга
+  - name: Numbers
+    description: Caller-ID, теги и спам-репорты
+  - name: Search
+    description: Единый поиск по номерам и контактам
+  - name: Admin
+    description: Админ-панель (роль admin)
+
+paths:
+  /:
+    get:
+      tags: [Health]
+      summary: Индекс сервиса
+      security: []
+      responses:
+        '200':
+          description: Метаданные сервиса и ссылки
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ServiceInfo'
+
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Процесс жив
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      description: Проверяет Postgres, Redis и Kafka (если включена).
+      security: []
+      responses:
+        '200':
+          description: Все зависимости доступны
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ready'
+        '503':
+          description: Одна или несколько зависимостей недоступны
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ready'
+
+  /version:
+    get:
+      tags: [Health]
+      summary: Версия сборки
+      security: []
+      responses:
+        '200':
+          description: Версия и окружение
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/VersionInfo'
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      description: Текстовый формат Prometheus 0.0.4.
+      security: []
+      responses:
+        '200':
+          description: Метрики процесса
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /openapi.yaml:
+    get:
+      tags: [Health]
+      summary: Эта OpenAPI-спецификация
+      security: []
+      responses:
+        '200':
+          description: YAML-документ
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  /docs:
+    get:
+      tags: [Health]
+      summary: Swagger UI
+      security: []
+      responses:
+        '200':
+          description: HTML-страница Swagger UI
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация
+      description: Создаёт пользователя и сразу выдаёт пару токенов.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              phone: "+79991234567"
+              password: "Passw0rd123"
+              display_name: "Ivan Petrov"
+              email: "ivan@example.com"
+      responses:
+        '201':
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataAuthResult'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход по телефону и паролю
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              phone: "+79991234567"
+              password: "Passw0rd123"
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataAuthResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Ротация refresh-токена
+      description: Refresh token одноразовый. Повторное использование возвращает 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Новая пара токенов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataAuthResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Выход
+      description: Отзывает refresh token (если передан) и blacklist-ит текущий access JTI.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          description: Сессия завершена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: Текущий пользователь
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/users/{id}:
+    get:
+      tags: [Users]
+      summary: Публичный профиль пользователя
+      description: Чужой телефон маскируется, email скрывается.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/users/me:
+    patch:
+      tags: [Users]
+      summary: Обновить профиль
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: Обновлённый профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Validation'
+    delete:
+      tags: [Users]
+      summary: Удалить аккаунт
+      description: Каскадно удаляет контакты, токены и репорты.
+      responses:
+        '204':
+          description: Аккаунт удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/users/me/password:
+    put:
+      tags: [Users]
+      summary: Сменить пароль
+      description: Отзывает все активные refresh-сессии.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '204':
+          description: Пароль изменён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Validation'
+
+  /api/v1/contacts:
+    get:
+      tags: [Contacts]
+      summary: Список контактов
+      parameters:
+        - $ref: '#/components/parameters/Q'
+        - $ref: '#/components/parameters/Favorite'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Страница контактов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedContacts'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Contacts]
+      summary: Создать контакт
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactInput'
+      responses:
+        '201':
+          description: Контакт создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataContact'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Validation'
+
+  /api/v1/contacts/import:
+    post:
+      tags: [Contacts]
+      summary: Массовый импорт контактов
+      description: До 500 контактов за запрос, upsert по паре (owner, phone).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '200':
+          description: Результат импорта
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataImportResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Validation'
+
+  /api/v1/contacts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+    get:
+      tags: [Contacts]
+      summary: Получить контакт
+      responses:
+        '200':
+          description: Контакт
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataContact'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Contacts]
+      summary: Изменить контакт
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactUpdate'
+      responses:
+        '200':
+          description: Обновлённый контакт
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataContact'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Validation'
+    delete:
+      tags: [Contacts]
+      summary: Удалить контакт
+      responses:
+        '204':
+          description: Удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/numbers/spam/top:
+    get:
+      tags: [Numbers]
+      summary: Топ спам-номеров
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Рейтинг номеров
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNumbers'
+
+  /api/v1/numbers/{phone}:
+    get:
+      tags: [Numbers]
+      summary: Caller-ID lookup
+      description: |
+        Публичный endpoint. Если номер неизвестен, создаётся пустой профиль.
+        Access token опционален и используется только для аналитики.
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Phone'
+      responses:
+        '200':
+          description: Карточка номера и теги
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataLookupResult'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/numbers/{phone}/tags:
+    parameters:
+      - $ref: '#/components/parameters/Phone'
+    get:
+      tags: [Numbers]
+      summary: Теги номера
+      security: []
+      responses:
+        '200':
+          description: Список тегов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataTags'
+        '422':
+          $ref: '#/components/responses/Validation'
+    post:
+      tags: [Numbers]
+      summary: Добавить тег
+      description: Повторный тег увеличивает его weight и пересчитывает spam score.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagInput'
+            example:
+              tag: "telemarketing"
+      responses:
+        '201':
+          description: Тег создан или усилен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataTag'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Validation'
+
+  /api/v1/numbers/{phone}/tags/{tagID}:
+    delete:
+      tags: [Numbers]
+      summary: Удалить тег
+      description: Доступно автору тега или администратору.
+      parameters:
+        - $ref: '#/components/parameters/Phone'
+        - $ref: '#/components/parameters/TagID'
+      responses:
+        '204':
+          description: Удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/numbers/{phone}/spam:
+    post:
+      tags: [Numbers]
+      summary: Пожаловаться на спам
+      description: Один активный репорт на пользователя и номер. Повтор → 409.
+      parameters:
+        - $ref: '#/components/parameters/Phone'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamReportInput'
+            example:
+              category: "telemarketing"
+              comment: "Звонят каждый день"
+      responses:
+        '201':
+          description: Репорт принят, возвращена обновлённая карточка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataLookupResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Validation'
+
+  /api/v1/tags:
+    get:
+      tags: [Numbers]
+      summary: Каталог популярных тегов
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Агрегированные теги
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataTagCounts'
+
+  /api/v1/search:
+    get:
+      tags: [Search]
+      summary: Поиск по номерам и контактам
+      description: Ищет по номеру/имени в общем справочнике и в личной книге.
+      parameters:
+        - $ref: '#/components/parameters/Q'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Результаты поиска
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataSearchResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Validation'
+
+  /api/v1/admin/stats:
+    get:
+      tags: [Admin]
+      summary: Сводная статистика
+      responses:
+        '200':
+          description: Метрики платформы
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/users:
+    get:
+      tags: [Admin]
+      summary: Список пользователей
+      parameters:
+        - $ref: '#/components/parameters/Q'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Страница пользователей
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/users/{id}:
+    get:
+      tags: [Admin]
+      summary: Пользователь по ID
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Admin]
+      summary: Удалить пользователя
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '204':
+          description: Удалён
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/admin/users/{id}/block:
+    patch:
+      tags: [Admin]
+      summary: Блокировка / разблокировка
+      description: При блокировке отзываются все refresh-сессии пользователя.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockUserRequest'
+      responses:
+        '200':
+          description: Обновлённый пользователь
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUser'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/admin/reports:
+    get:
+      tags: [Admin]
+      summary: Очередь спам-репортов
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Страница репортов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedReports'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token из register/login/refresh.
+
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      description: UUID ресурса
+      schema:
+        type: string
+        format: uuid
+    TagID:
+      name: tagID
+      in: path
+      required: true
+      description: UUID тега
+      schema:
+        type: string
+        format: uuid
+    Phone:
+      name: phone
+      in: path
+      required: true
+      description: Номер в международном или локальном формате (нормализуется).
+      schema:
+        type: string
+        example: "+79991234567"
+    Q:
+      name: q
+      in: query
+      required: false
+      description: Поисковая строка
+      schema:
+        type: string
+        minLength: 2
+        maxLength: 64
+    Favorite:
+      name: favorite
+      in: query
+      required: false
+      description: Фильтр избранных контактов
+      schema:
+        type: boolean
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Требуется аутентификация или токен невалиден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Недостаточно прав / пользователь заблокирован
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: Конфликт состояния или дубликат
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Validation:
+      description: Ошибка валидации полей
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: request validation failed
+              details:
+                phone: must be a valid phone number (8..15 digits)
+              request_id: 4a8f2c1e9b7d
+    RateLimited:
+      description: Превышен лимит запросов
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Секунды до сброса окна
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: request validation failed
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+        request_id:
+          type: string
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Meta:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        per_page:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          format: int64
+          example: 42
+        total_pages:
+          type: integer
+          format: int64
+          example: 3
+
+    ServiceInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        docs:
+          type: string
+        openapi:
+          type: string
+        health:
+          type: string
+        metrics:
+          type: string
+        api_base:
+          type: string
+
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: 1.0.0
+
+    Ready:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        time:
+          type: string
+          format: date-time
+        checks:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [up, down]
+              latency_ms:
+                type: integer
+                format: int64
+              error:
+                type: string
+
+    VersionInfo:
+      type: object
+      properties:
+        version:
+          type: string
+        service:
+          type: string
+        env:
+          type: string
+        time:
+          type: string
+          format: date-time
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        phone:
+          type: string
+          example: "+79991234567"
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [user, admin]
+        is_blocked:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    RegisterRequest:
+      type: object
+      required: [phone, password, display_name]
+      properties:
+        phone:
+          type: string
+          example: "+79991234567"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          description: Минимум одна буква и одна цифра.
+        display_name:
+          type: string
+          minLength: 2
+          maxLength: 64
+        email:
+          type: string
+          format: email
+          maxLength: 254
+
+    LoginRequest:
+      type: object
+      required: [phone, password]
+      properties:
+        phone:
+          type: string
+        password:
+          type: string
+          format: password
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          description: Опционально; access token отзывается всегда.
+
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+          format: password
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+
+    Tokens:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          format: int64
+          example: 900
+        expires_at:
+          type: string
+          format: date-time
+
+    AuthResult:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        tokens:
+          $ref: '#/components/schemas/Tokens'
+
+    UserUpdate:
+      type: object
+      properties:
+        display_name:
+          type: string
+          minLength: 2
+          maxLength: 64
+        email:
+          type: string
+          format: email
+          description: Пустая строка очищает email.
+
+    Contact:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        phone:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        note:
+          type: string
+        is_favorite:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ContactInput:
+      type: object
+      required: [phone, name]
+      properties:
+        phone:
+          type: string
+          example: "+79997654321"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        email:
+          type: string
+          format: email
+        note:
+          type: string
+          maxLength: 1000
+        is_favorite:
+          type: boolean
+          default: false
+
+    ContactUpdate:
+      type: object
+      properties:
+        phone:
+          type: string
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        email:
+          type: string
+        note:
+          type: string
+          maxLength: 1000
+        is_favorite:
+          type: boolean
+
+    ImportRequest:
+      type: object
+      required: [contacts]
+      properties:
+        contacts:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/ContactInput'
+
+    ImportResult:
+      type: object
+      properties:
+        imported:
+          type: integer
+          example: 2
+        skipped:
+          type: integer
+          example: 0
+
+    Number:
+      type: object
+      properties:
+        phone:
+          type: string
+        name:
+          type: string
+        carrier:
+          type: string
+        country:
+          type: string
+        spam_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        reports_count:
+          type: integer
+          format: int64
+        lookups_count:
+          type: integer
+          format: int64
+        updated_at:
+          type: string
+          format: date-time
+
+    Tag:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        phone:
+          type: string
+        tag:
+          type: string
+        weight:
+          type: integer
+        created_by:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    TagInput:
+      type: object
+      required: [tag]
+      properties:
+        tag:
+          type: string
+          minLength: 2
+          maxLength: 32
+          example: spam
+
+    TagCount:
+      type: object
+      properties:
+        tag:
+          type: string
+        count:
+          type: integer
+          format: int64
+
+    LookupResult:
+      type: object
+      properties:
+        number:
+          $ref: '#/components/schemas/Number'
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+
+    SpamReportInput:
+      type: object
+      required: [category]
+      properties:
+        category:
+          type: string
+          enum: [fraud, scam, telemarketing, robocall, spam, other]
+        comment:
+          type: string
+          maxLength: 500
+
+    SpamReport:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        phone:
+          type: string
+        reporter_id:
+          type: string
+          format: uuid
+        category:
+          type: string
+        comment:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    BlockUserRequest:
+      type: object
+      required: [blocked]
+      properties:
+        blocked:
+          type: boolean
+
+    Stats:
+      type: object
+      properties:
+        users:
+          type: integer
+          format: int64
+        blocked_users:
+          type: integer
+          format: int64
+        contacts:
+          type: integer
+          format: int64
+        numbers:
+          type: integer
+          format: int64
+        lookups:
+          type: integer
+          format: int64
+        spam_reports:
+          type: integer
+          format: int64
+        tags:
+          type: integer
+          format: int64
+        top_tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagCount'
+        top_spam_numbers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Number'
+        generated_at:
+          type: string
+          format: date-time
+
+    SearchResult:
+      type: object
+      properties:
+        query:
+          type: string
+        numbers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Number'
+        contacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contact'
+
+    DataAuthResult:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/AuthResult'
+    DataUser:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/User'
+    DataContact:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Contact'
+    DataTag:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Tag'
+    DataTags:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+    DataTagCounts:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagCount'
+    DataNumbers:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Number'
+    DataLookupResult:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/LookupResult'
+    DataImportResult:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ImportResult'
+    DataStats:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Stats'
+    DataSearchResult:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SearchResult'
+
+    PaginatedContacts:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contact'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    PaginatedUsers:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    PaginatedReports:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpamReport'
+        meta:
+          $ref: '#/components/schemas/Meta'
