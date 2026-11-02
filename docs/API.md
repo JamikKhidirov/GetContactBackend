@@ -238,6 +238,12 @@ curl -s -X PATCH http://localhost:8080/api/v1/users/me \
 
 `204` — пароль изменён, все refresh-сессии отозваны. `401` — неверный текущий пароль.
 
+### `GET /api/v1/users/me/stats` 🔑
+
+Личный дашборд: `contacts`, `favorites`, `tags_added`, `spam_reports`,
+`names_submitted`, `active_sessions`, `member_since`. Счётчики читаются
+параллельно, поэтому endpoint не деградирует с ростом телефонной книги.
+
 ### `DELETE /api/v1/users/me` 🔑
 
 Каскадно удаляет контакты, токены и репорты. `204 No Content`.
@@ -353,6 +359,81 @@ curl -s http://localhost:8080/api/v1/numbers/+79991234567
 
 `422` — некорректный телефон, `429` — лимит. Карточка кэшируется на 60 с.
 
+**Нормализация телефона.** Принимаются `+7…`, `8…`, `00…`, скобки, пробелы,
+дефисы, точки, слэши и full-width цифры. Явный `+` или `00` отключает
+российские эвристики, поэтому `+47…`, `+81…` и другие международные номера
+не переписываются. Результат всегда `+<8..15 цифр>`.
+
+### `GET /api/v1/numbers/trending` 🔓
+
+Номера с самым большим счётчиком просмотров. Query: `limit` (1..50, по
+умолчанию 10).
+
+### `POST /api/v1/numbers/lookup` 🔑
+
+Пакетное определение до 100 номеров за запрос — для синхронизации журнала
+звонков. Невалидный номер не ломает пакет: в его элементе будет `error`.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/numbers/lookup \
+  -H "Authorization: Bearer $ACCESS" -H 'Content-Type: application/json' \
+  -d '{"phones":["+79991234567","8 999 765-43-21","bad"]}'
+```
+
+```json
+{
+  "data": {
+    "results": [
+      { "phone": "+79991234567", "number": { "...": "..." }, "tags": [] },
+      { "phone": "+79997654321", "number": { "...": "..." }, "tags": [] },
+      { "phone": "bad", "error": "must be a valid phone number" }
+    ],
+    "requested": 3,
+    "returned": 2
+  }
+}
+```
+
+### `GET /api/v1/numbers/{phone}/names` 🔓
+
+Агрегированные имена из сообщества: `[{ "name": "Иван", "count": 3 }]`.
+
+### `POST /api/v1/numbers/{phone}/names` 🔑
+
+Один голос на пользователя и номер; повторная отправка **заменяет** голос.
+После изменения пересчитывается отображаемое имя номера.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/numbers/+79991234567/names \
+  -H "Authorization: Bearer $ACCESS" -H 'Content-Type: application/json' \
+  -d '{"name":"Иван Петров"}'
+```
+
+`201` — голос; `name` — 2..64 символа, управляющие символы и `<>` запрещены.
+
+### `DELETE /api/v1/numbers/{phone}/names/{nameID}` 🔑
+
+Доступно автору голоса или администратору.
+
+### `GET /api/v1/numbers/{phone}/spam` 🔓
+
+Сводка репортов без раскрытия авторов:
+
+```json
+{
+  "data": {
+    "phone": "+79995555555",
+    "total": 12,
+    "by_category": [ { "category": "telemarketing", "count": 9 } ],
+    "last_reported_at": "2026-01-01T10:00:00Z"
+  }
+}
+```
+
+### `GET /api/v1/spam/categories` 🔓
+
+Каталог допустимых категорий: `code`, `label`, `description`, `severity`.
+
 ### `GET /api/v1/numbers/{phone}/tags` 🔓
 
 Список тегов номера, отсортированный по весу.
@@ -398,7 +479,7 @@ curl -s -X POST http://localhost:8080/api/v1/numbers/+79995555555/spam \
 
 | Query | По умолчанию | Максимум |
 |---|---|---|
-| `limit` | 20 | 100 |
+| `limit` | 10 | 100 |
 
 ```bash
 curl -s "http://localhost:8080/api/v1/numbers/spam/top?limit=10"
@@ -417,7 +498,7 @@ curl -s "http://localhost:8080/api/v1/numbers/spam/top?limit=10"
 | Query | Обязательно | Правила |
 |---|---|---|
 | `q` | да | 2..64 |
-| `limit` | нет | 1..100, по умолчанию 20 |
+| `limit` | нет | 1..50, по умолчанию 20 |
 
 ```bash
 curl -s "http://localhost:8080/api/v1/search?q=Alice&limit=10" \
@@ -501,6 +582,49 @@ curl -s -X PATCH http://localhost:8080/api/v1/admin/users/$USER_ID/block \
   "meta": { "page": 1, "per_page": 20, "total": 1, "total_pages": 1 }
 }
 ```
+
+### `DELETE /api/v1/admin/reports/{reportID}`
+
+Удаляет репорт, пересчитывает `spam_score`, инвалидирует кэш caller-ID и
+публикует `number.spam_deleted`. `204`.
+
+### `GET /api/v1/admin/numbers/{phone}`
+
+**Полное досье номера** для администратора: профиль, теги, все голоса за имя,
+агрегаты имён, последние репорты, сводка по категориям и последние
+audit-события. Каждое успешное чтение пишет `admin.number_viewed` с ID
+администратора — это не анонимный «бэкдор», а журналируемый доступ.
+
+```json
+{
+  "data": {
+    "number": { "phone": "+79995555555", "spam_score": 60, "...": "..." },
+    "tags": [ { "tag": "telemarketing", "weight": 4, "...": "..." } ],
+    "names": [ { "id": "...", "name": "Иван", "submitted_by": "...", "...": "..." } ],
+    "name_counts": [ { "name": "Иван", "count": 2 } ],
+    "reports": [ { "id": "...", "category": "telemarketing", "...": "..." } ],
+    "spam": { "total": 4, "by_category": [ { "category": "telemarketing", "count": 4 } ] },
+    "audit": [ { "event_type": "admin.number_viewed", "...": "..." } ]
+  }
+}
+```
+
+### `PATCH /api/v1/admin/numbers/{phone}`
+
+Частичное редактирование: `name`, `carrier`, `country`. Отсутствующее поле не
+меняется, пустая строка очищает. `400` — пустой body; `404` — номера нет.
+
+### `GET /api/v1/admin/audit`
+
+Лента всех событий, дошедших до `audit_events` через Kafka worker, новые сверху.
+Query: `event_type`, `aggregate_id`, `page`, `per_page` (1..100). Фильтры
+комбинируются по AND. Используется для расследований и проверки доступа.
+
+### `GET /api/v1/admin/users/{id}/summary`
+
+Профиль пользователя, счётчики активности (`contacts`, `tags_added`,
+`spam_reports`, `names_submitted`, `active_sessions`) и последние
+audit-события по его `user_id`.
 
 ---
 

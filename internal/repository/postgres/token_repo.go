@@ -70,4 +70,13 @@ func (r *TokenRepo) DeleteExpired(ctx context.Context, before time.Time) (int64,
 	return tag.RowsAffected(), nil
 }
 
+// CountActiveForUser returns the number of live refresh sessions.
+func (r *TokenRepo) CountActiveForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	defer observe("tokens.count_active", time.Now())
+	var n int64
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_tokens
+		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`, userID).Scan(&n)
+	return n, err
+}
+
 var _ domain.TokenRepository = (*TokenRepo)(nil)

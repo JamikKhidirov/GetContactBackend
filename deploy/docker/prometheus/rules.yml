@@ -1,0 +1,23 @@
+groups:
+  - name: getcontact-recording
+    interval: 30s
+    rules:
+      # p97 is the primary latency SLO: 97% of requests must finish below the
+      # threshold. Recording the query keeps dashboards and alerts cheap.
+      - record: getcontact:http_request_duration_seconds:p97_5m
+        expr: |
+          histogram_quantile(0.97,
+            sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m]))
+          )
+
+      - record: getcontact:http_request_duration_seconds:p97_5m:by_route
+        expr: |
+          histogram_quantile(0.97,
+            sum by (le, route) (rate(getcontact_http_request_duration_seconds_bucket[5m]))
+          )
+
+      - record: getcontact:db_query_duration_seconds:p97_5m
+        expr: |
+          histogram_quantile(0.97,
+            sum by (le) (rate(getcontact_db_query_duration_seconds_bucket[5m]))
+          )

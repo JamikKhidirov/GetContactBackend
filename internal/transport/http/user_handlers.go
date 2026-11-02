@@ -62,6 +62,16 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
+func (a *API) personalStats(w http.ResponseWriter, r *http.Request) {
+	uid, _ := userIDFrom(r.Context())
+	stats, err := a.users.Stats(r.Context(), uid)
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusOK, stats)
+}
+
 func (a *API) deleteMe(w http.ResponseWriter, r *http.Request) {
 	uid, _ := userIDFrom(r.Context())
 	if err := a.users.DeleteMe(r.Context(), uid); err != nil {

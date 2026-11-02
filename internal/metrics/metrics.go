@@ -77,6 +77,12 @@ var (
 		Help: "Total community tags added.",
 	})
 
+	// NamesAdded counts community name votes.
+	NamesAdded = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "business", Name: "names_added_total",
+		Help: "Total community name votes submitted.",
+	})
+
 	// AuthAttempts counts login/register/refresh outcomes.
 	AuthAttempts = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Subsystem: "auth", Name: "attempts_total",

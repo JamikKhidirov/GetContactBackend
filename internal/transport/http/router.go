@@ -97,9 +97,13 @@ func New(d Deps) http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(a.rateLimit("public", a.cfg.Rate.PublicRPM))
 			r.Get("/tags", a.listTagCatalog)
+			r.Get("/spam/categories", a.spamCategories)
 			r.Get("/numbers/spam/top", a.topSpam)
-			r.With(a.optionalAuth).Get("/numbers/{phone}", a.lookupNumber)
+			r.Get("/numbers/trending", a.trendingNumbers)
 			r.Get("/numbers/{phone}/tags", a.listNumberTags)
+			r.Get("/numbers/{phone}/names", a.numberNames)
+			r.Get("/numbers/{phone}/spam", a.numberSpamSummary)
+			r.With(a.optionalAuth).Get("/numbers/{phone}", a.lookupNumber)
 		})
 
 		// Anonymous authentication endpoints get a stricter bucket.
@@ -118,6 +122,7 @@ func New(d Deps) http.Handler {
 			r.Post("/auth/logout", a.logout)
 			r.Get("/auth/me", a.me)
 
+			r.Get("/users/me/stats", a.personalStats)
 			r.Get("/users/{id}", a.getUser)
 			r.Patch("/users/me", a.updateMe)
 			r.Put("/users/me/password", a.changePassword)
@@ -130,8 +135,11 @@ func New(d Deps) http.Handler {
 			r.Patch("/contacts/{id}", a.updateContact)
 			r.Delete("/contacts/{id}", a.deleteContact)
 
+			r.Post("/numbers/lookup", a.batchLookup)
 			r.Post("/numbers/{phone}/tags", a.addTag)
 			r.Delete("/numbers/{phone}/tags/{tagID}", a.deleteTag)
+			r.Post("/numbers/{phone}/names", a.addNumberName)
+			r.Delete("/numbers/{phone}/names/{nameID}", a.deleteNumberName)
 			r.Post("/numbers/{phone}/spam", a.reportSpam)
 
 			r.Get("/search", a.search)
@@ -139,11 +147,16 @@ func New(d Deps) http.Handler {
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(a.requireAdmin)
 				r.Get("/stats", a.adminStats)
+				r.Get("/audit", a.adminAudit)
 				r.Get("/users", a.adminListUsers)
 				r.Get("/users/{id}", a.adminGetUser)
+				r.Get("/users/{id}/summary", a.adminUserSummary)
 				r.Patch("/users/{id}/block", a.adminSetBlocked)
 				r.Delete("/users/{id}", a.adminDeleteUser)
 				r.Get("/reports", a.adminListReports)
+				r.Delete("/reports/{reportID}", a.adminDeleteReport)
+				r.Get("/numbers/{phone}", a.adminNumberDossier)
+				r.Patch("/numbers/{phone}", a.adminUpdateNumber)
 			})
 		})
 	})

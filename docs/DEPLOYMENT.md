@@ -228,8 +228,9 @@ kubectl -n getcontact patch serviceaccount default \
 - [ ] Prometheus скрейпит `/metrics` API и worker.
 - [ ] Grafana-дашборд импортирован (в k8s — через ConfigMap/Grafana Operator).
 - [ ] Алерты из `alerts.yml` / `PrometheusRule` доставлены в Alertmanager.
+- [ ] Recording rules из `rules.yml` / `PrometheusRule` загружены (p97).
 - [ ] Логи централизованы (Loki/ELK), `request_id` в каждой записи.
-- [ ] SLO: p95 < 300 мс, 5xx < 1%, cache hit > 70%.
+- [ ] SLO: p97 < 300 мс, 5xx < 1%, cache hit > 70%.
 
 ### Данные
 
@@ -244,7 +245,7 @@ kubectl -n getcontact patch serviceaccount default \
 
 | Симптом | Действие |
 |---|---|
-| Высокий RPS, CPU API > 70% | HPA увеличивает реплики; проверьте p95 |
+| Высокий RPS, CPU API > 70% | HPA увеличивает реплики; проверьте p97 |
 | Низкий cache hit | увеличьте `REDIS_CACHE_TTL`, проверьте инвалидацию |
 | Медленные запросы к БД | `EXPLAIN ANALYZE`, проверьте GIN/trigram, увеличьте пул |
 | Много 429 | поднимите `RATE_LIMIT_PUBLIC_RPM` или добавьте Redis-кластер |

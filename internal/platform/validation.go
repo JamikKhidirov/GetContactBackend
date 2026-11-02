@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -60,6 +61,23 @@ func NormalizeTag(tag string) (string, error) {
 		return "", fmt.Errorf("tag must be 2..32 characters: letters, digits, spaces, '-' or '_'")
 	}
 	return tag, nil
+}
+
+// NormalizePersonName canonicalises a user-contributed name for a phone number.
+// It accepts any human script, collapses whitespace and rejects control
+// characters and angle brackets so the value stays safe in every renderer.
+func NormalizePersonName(name string) (string, error) {
+	name = strings.Join(strings.Fields(name), " ")
+	n := utf8.RuneCountInString(name)
+	if n < 2 || n > 64 {
+		return "", fmt.Errorf("name must be between 2 and 64 characters")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || r == '<' || r == '>' {
+			return "", fmt.Errorf("name contains invalid characters")
+		}
+	}
+	return name, nil
 }
 
 // SpamCategories is the closed set accepted by POST /numbers/{phone}/spam.

@@ -77,17 +77,18 @@ func run() error {
 	contactRepo := postgres.NewContactRepo(pool)
 	numberRepo := postgres.NewNumberRepo(pool)
 	tokenRepo := postgres.NewTokenRepo(pool)
+	auditRepo := postgres.NewAuditRepo(pool)
 
 	argon := platform.ArgonParams{
 		Memory: cfg.Auth.ArgonMemory, Iterations: cfg.Auth.ArgonIterations,
 		Threads: cfg.Auth.ArgonThreads, KeyLen: cfg.Auth.ArgonKeyLen,
 	}
 	authSvc := service.NewAuthService(userRepo, tokenRepo, cache, tm, cfg.Auth.RefreshTTL, argon, publisher, log)
-	userSvc := service.NewUserService(userRepo, tokenRepo, argon, log)
+	userSvc := service.NewUserService(userRepo, contactRepo, numberRepo, tokenRepo, argon, log)
 	contactSvc := service.NewContactService(contactRepo, publisher, log)
 	numberSvc := service.NewNumberService(numberRepo, cache, publisher, log, cfg.Redis.CacheTTL)
 	searchSvc := service.NewSearchService(numberRepo, contactRepo)
-	adminSvc := service.NewAdminService(userRepo, numberRepo, contactRepo, tokenRepo, publisher, log)
+	adminSvc := service.NewAdminService(userRepo, numberRepo, contactRepo, tokenRepo, auditRepo, cache, publisher, log)
 
 	if err := authSvc.BootstrapAdmin(ctx, cfg.Admin.Phone, cfg.Admin.Password, cfg.Admin.Name); err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)

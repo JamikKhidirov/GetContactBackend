@@ -71,8 +71,8 @@
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
       "id": 3,
       "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95", "range": true, "refId": "A" }],
-      "title": "p95 latency",
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.97, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p97", "range": true, "refId": "A" }],
+      "title": "p97 latency",
       "type": "stat"
     },
     {
@@ -143,6 +143,7 @@
       "targets": [
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.50, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p50", "range": true, "refId": "A" },
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95", "range": true, "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.97, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p97", "range": true, "refId": "D" },
         { "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.99, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p99", "range": true, "refId": "C" }
       ],
       "title": "Latency percentiles",
@@ -196,8 +197,8 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
       "id": 10,
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(getcontact_db_query_duration_seconds_bucket[5m])))", "legendFormat": "{{operation}}", "range": true, "refId": "A" }],
-      "title": "Database p95 by operation",
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "histogram_quantile(0.97, sum by (le, operation) (rate(getcontact_db_query_duration_seconds_bucket[5m])))", "legendFormat": "{{operation}}", "range": true, "refId": "A" }],
+      "title": "Database p97 by operation",
       "type": "timeseries"
     },
     {
@@ -285,6 +286,24 @@
       "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "go_goroutines{job=~\"getcontact-.*\"}", "legendFormat": "{{job}}", "range": true, "refId": "A" }],
       "title": "Goroutines",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "p97 latency per chi route; recorded by getcontact:http_request_duration_seconds:p97_5m:by_route.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": true, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 37 },
+      "id": 16,
+      "options": { "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "editorMode": "code", "expr": "getcontact:http_request_duration_seconds:p97_5m:by_route", "legendFormat": "{{route}}", "range": true, "refId": "A" }],
+      "title": "Route p97 latency",
       "type": "timeseries"
     }
   ],

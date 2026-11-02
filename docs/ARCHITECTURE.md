@@ -259,8 +259,19 @@ score     = min(100, reports_count * 12 + tagPart)
 Risky-теги: `fraud`, `scam`, `spam`, `telemarketing`, `robocall`, `мошенник`, `спам`.
 Вес тега растёт при повторном добавлении того же тега (upsert по `(phone, tag)`).
 
-**Инвалидация кэша:** после добавления/удаления тега и после спам-репорта ключ
-`number:{phone}` удаляется, чтобы следующий lookup увидел новый score.
+**Нормализация телефона.** `platform.NormalizePhone` принимает `+`, `00`,
+локальные `8…`/10-значные номера, скобки, пробелы, Unicode-дефисы и full-width
+цифры. Явный `+`/`00` отключает российские эвристики, поэтому международные
+номера не переписываются; на выходе всегда `+<8..15 цифр>`. BOM и zero-width
+символы вырезаются, ввод длиннее 64 байт отклоняется.
+
+**Community-имена.** `number_names` хранит по одному голосу на пользователя и
+номер; повторная отправка заменяет вариант, а `numbers.name` пересчитывается по
+самому популярному имени.
+
+**Инвалидация кэша:** после добавления/удаления тега, имени и после
+спам-репорта ключ `number:{phone}` удаляется, чтобы следующий lookup увидел
+новый score.
 
 **Идемпотентность репорта** обеспечивает уникальный индекс `(phone, reporter_id)`;
 повторная попытка возвращает `409 CONFLICT`, а не увеличивает счётчик.
@@ -275,7 +286,9 @@ erDiagram
     users ||--o{ refresh_tokens : "user_id"
     users ||--o{ spam_reports : "reporter_id"
     users ||--o{ tags : "created_by"
+    users ||--o{ number_names : "submitted_by"
     numbers ||--o{ tags : "phone"
+    numbers ||--o{ number_names : "phone"
     numbers ||--o{ spam_reports : "phone"
 
     users {
@@ -326,6 +339,14 @@ erDiagram
         text comment
         timestamptz created_at
     }
+    number_names {
+        uuid id PK
+        varchar phone FK
+        uuid submitted_by FK
+        varchar name
+        timestamptz created_at
+        timestamptz updated_at
+    }
     refresh_tokens {
         uuid id PK
         uuid user_id FK
@@ -340,7 +361,9 @@ erDiagram
         uuid id PK
         varchar topic
         varchar event_type
+        varchar aggregate_id
         jsonb payload
+        timestamptz occurred_at
         timestamptz consumed_at
     }
     schema_migrations {
@@ -377,6 +400,9 @@ erDiagram
 | `spam_reports` | `UNIQUE(phone, reporter_id)` | анти-накрутка |
 | `spam_reports` | `(phone, created_at DESC)` | история номера |
 | `spam_reports` | `(created_at DESC)` | админ-очередь |
+| `number_names` | `UNIQUE(phone, submitted_by) WHERE submitted_by IS NOT NULL` | один голос на пользователя |
+| `number_names` | `(phone, created_at DESC)` | голоса номера |
+| `number_names` | `(phone, name)` | агрегация вариантов |
 | `refresh_tokens` | `UNIQUE(token_hash)` | ротация |
 | `refresh_tokens` | `(user_id) WHERE revoked_at IS NULL` | отзыв сессий |
 | `refresh_tokens` | `(expires_at) WHERE revoked_at IS NULL` | очистка |

@@ -216,6 +216,51 @@ func TestEndToEndUserJourney(t *testing.T) {
 	status, body = c.request(t, http.MethodGet, "/api/v1/numbers/spam/top?limit=5", access, nil)
 	expect(t, "top spam", status, http.StatusOK, body)
 
+	status, body = c.request(t, http.MethodGet, "/api/v1/numbers/trending?limit=5", access, nil)
+	expect(t, "trending numbers", status, http.StatusOK, body)
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/spam/categories", access, nil)
+	expect(t, "spam categories", status, http.StatusOK, body)
+	if len(body["data"].([]any)) == 0 {
+		t.Fatal("spam category catalog is empty")
+	}
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/numbers/"+lookupPhone+"/spam", access, nil)
+	expect(t, "spam summary", status, http.StatusOK, body)
+	if total := data(t, body)["total"].(float64); total < 1 {
+		t.Fatalf("spam summary total %v, want >= 1", total)
+	}
+
+	status, body = c.request(t, http.MethodPost, "/api/v1/numbers/lookup", access, map[string]any{
+		"phones": []string{lookupPhone, "+7 (999) 000-00-00", "not-a-phone"},
+	})
+	expect(t, "batch lookup", status, http.StatusOK, body)
+	batch := data(t, body)
+	if int(batch["requested"].(float64)) != 3 || int(batch["returned"].(float64)) != 2 {
+		t.Fatalf("batch lookup counts: %v", batch)
+	}
+
+	status, body = c.request(t, http.MethodPost, "/api/v1/numbers/"+lookupPhone+"/names", access, map[string]any{
+		"name": "E2E Spam Caller",
+	})
+	expect(t, "add number name", status, http.StatusCreated, body)
+	nameID := str(t, data(t, body), "id")
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/numbers/"+lookupPhone+"/names", access, nil)
+	expect(t, "number names", status, http.StatusOK, body)
+	if len(body["data"].([]any)) < 1 {
+		t.Fatal("number name was not aggregated")
+	}
+
+	status, body = c.request(t, http.MethodDelete, "/api/v1/numbers/"+lookupPhone+"/names/"+nameID, access, nil)
+	expect(t, "delete number name", status, http.StatusNoContent, body)
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/users/me/stats", access, nil)
+	expect(t, "user stats", status, http.StatusOK, body)
+	if int(data(t, body)["contacts"].(float64)) < 3 {
+		t.Fatalf("user stats contacts: %v", body)
+	}
+
 	status, body = c.request(t, http.MethodGet, "/api/v1/tags?limit=10", access, nil)
 	expect(t, "tag catalog", status, http.StatusOK, body)
 
@@ -277,6 +322,45 @@ func TestEndToEndUserJourney(t *testing.T) {
 
 	status, body = c.request(t, http.MethodGet, "/api/v1/admin/reports?page=1&per_page=10", adminAccess, nil)
 	expect(t, "admin reports", status, http.StatusOK, body)
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/admin/users/"+userID+"/summary", adminAccess, nil)
+	expect(t, "admin user summary", status, http.StatusOK, body)
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/admin/numbers/"+lookupPhone, adminAccess, nil)
+	expect(t, "admin number dossier", status, http.StatusOK, body)
+	dossier := data(t, body)
+	if got := str(t, dossier["number"].(map[string]any), "phone"); got != lookupPhone {
+		t.Fatalf("dossier phone %s, want %s", got, lookupPhone)
+	}
+
+	status, body = c.request(t, http.MethodPatch, "/api/v1/admin/numbers/"+lookupPhone, adminAccess, map[string]any{
+		"name": "E2E Admin Name", "carrier": "MTS",
+	})
+	expect(t, "admin update number", status, http.StatusOK, body)
+	if got := str(t, data(t, body), "name"); got != "E2E Admin Name" {
+		t.Fatalf("admin updated name %s", got)
+	}
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/admin/audit?page=1&per_page=10", adminAccess, nil)
+	expect(t, "admin audit", status, http.StatusOK, body)
+
+	// Moderation: find the report created above and delete it. The number's
+	// spam score and caller-ID cache must be recomputed by the service.
+	status, body = c.request(t, http.MethodGet, "/api/v1/admin/reports?page=1&per_page=100", adminAccess, nil)
+	expect(t, "admin reports for delete", status, http.StatusOK, body)
+	reportID := ""
+	for _, item := range body["data"].([]any) {
+		report, _ := item.(map[string]any)
+		if report["phone"] == lookupPhone {
+			reportID = str(t, report, "id")
+			break
+		}
+	}
+	if reportID == "" {
+		t.Fatalf("report for %s not found in admin queue", lookupPhone)
+	}
+	status, body = c.request(t, http.MethodDelete, "/api/v1/admin/reports/"+reportID, adminAccess, nil)
+	expect(t, "admin delete report", status, http.StatusNoContent, body)
 
 	status, body = c.request(t, http.MethodPatch, "/api/v1/admin/users/"+userID+"/block", adminAccess, map[string]any{"blocked": false})
 	expect(t, "admin unblock", status, http.StatusOK, body)

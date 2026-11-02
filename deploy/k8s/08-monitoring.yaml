@@ -48,6 +48,25 @@ metadata:
     release: kube-prometheus-stack
 spec:
   groups:
+    - name: getcontact.recording
+      interval: 30s
+      rules:
+        - record: getcontact:http_request_duration_seconds:p97_5m
+          expr: |
+            histogram_quantile(0.97,
+              sum by (le) (rate(getcontact_http_request_duration_seconds_bucket{namespace="getcontact"}[5m]))
+            )
+        - record: getcontact:http_request_duration_seconds:p97_5m:by_route
+          expr: |
+            histogram_quantile(0.97,
+              sum by (le, route) (rate(getcontact_http_request_duration_seconds_bucket{namespace="getcontact"}[5m]))
+            )
+        - record: getcontact:db_query_duration_seconds:p97_5m
+          expr: |
+            histogram_quantile(0.97,
+              sum by (le) (rate(getcontact_db_query_duration_seconds_bucket{namespace="getcontact"}[5m]))
+            )
+
     - name: getcontact.rules
       interval: 30s
       rules:
@@ -73,16 +92,29 @@ spec:
             summary: "GetContact 5xx rate above 5%"
             description: "Check API logs, database and Redis health."
 
-        - alert: GetContactHighLatencyP95
+        - alert: GetContactHighLatencyP97
           expr: |
-            histogram_quantile(0.95,
+            histogram_quantile(0.97,
               sum by (le) (rate(getcontact_http_request_duration_seconds_bucket{namespace="getcontact"}[5m]))
             ) > 1
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "GetContact p95 latency above 1s"
+            summary: "GetContact p97 latency above 1s"
+            description: "97th percentile HTTP latency has exceeded 1 second for 5 minutes."
+
+        - alert: GetContactRouteLatencyP97High
+          expr: |
+            histogram_quantile(0.97,
+              sum by (le, route) (rate(getcontact_http_request_duration_seconds_bucket{namespace="getcontact"}[5m]))
+            ) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Route {{ $labels.route }} p97 latency above 2s"
+            description: "A single route has had a p97 above 2 seconds for 10 minutes."
 
         - alert: GetContactNoTraffic
           expr: sum(rate(getcontact_http_requests_total{namespace="getcontact"}[10m])) == 0
@@ -114,11 +146,11 @@ spec:
 
         - alert: GetContactDBLatencyHigh
           expr: |
-            histogram_quantile(0.95,
+            histogram_quantile(0.97,
               sum by (le) (rate(getcontact_db_query_duration_seconds_bucket{namespace="getcontact"}[5m]))
             ) > 0.5
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Database p95 query latency above 500ms"
+            summary: "Database p97 query latency above 500ms"

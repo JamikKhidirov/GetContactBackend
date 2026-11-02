@@ -161,6 +161,58 @@ kafka-topics.sh --bootstrap-server kafka:9092 \
 }
 ```
 
+### `number.name_added` / `number.name_removed`
+
+Голос за community-имя. `aggregate_id` = телефон. Добавление и смена варианта
+публикуют `number.name_added`, удаление — `number.name_removed`.
+
+```json
+{
+  "name_id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+  "phone": "+79991234567",
+  "name": "Иван Петров",
+  "user_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44"
+}
+```
+
+### `number.spam_deleted`
+
+Администратор удалил репорт; worker пересчитывает агрегаты. `aggregate_id` = телефон.
+
+```json
+{
+  "report_id": "7d8e9f00-1a2b-4c3d-9e4f-5a6b7c8d9e0f",
+  "phone": "+79995555555",
+  "actor_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44"
+}
+```
+
+### `admin.number_viewed`
+
+Пишется при **каждом** успешном чтении админского досье. Это ключевое событие
+подотчётности: по нему видно, кто и когда смотрел полный профиль номера.
+
+```json
+{
+  "phone": "+79991234567",
+  "actor_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44"
+}
+```
+
+### `admin.number_updated`
+
+Администратор изменил `name`, `carrier` или `country` профиля номера.
+
+```json
+{
+  "phone": "+79991234567",
+  "actor_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44",
+  "name": "Иван Петров",
+  "carrier": "MTS",
+  "country": "RU"
+}
+```
+
 ### Сводка
 
 | Тип | Aggregate | Когда |
@@ -170,7 +222,12 @@ kafka-topics.sh --bootstrap-server kafka:9092 \
 | `contact.created` | contact UUID | create/import |
 | `number.looked_up` | phone | каждый lookup |
 | `number.tag_added` | phone | add/upsert tag |
+| `number.name_added` | phone | add/change name vote |
+| `number.name_removed` | phone | delete name vote |
 | `number.spam_reported` | phone | accepted report |
+| `number.spam_deleted` | phone | admin deletes report |
+| `admin.number_viewed` | phone | admin reads dossier |
+| `admin.number_updated` | phone | admin edits profile |
 
 ---
 
@@ -287,7 +344,8 @@ docker exec -it gc-postgres psql -U getcontact -d getcontact \
 ```
 
 Ожидаемо после e2e-теста: `user.registered`, `contact.created`,
-`number.looked_up`, `number.tag_added`, `number.spam_reported`.
+`number.looked_up`, `number.tag_added`, `number.name_added`, `number.name_removed`,
+`number.spam_reported`, `number.spam_deleted`, `admin.number_viewed`, `admin.number_updated`.
 
 ---
 

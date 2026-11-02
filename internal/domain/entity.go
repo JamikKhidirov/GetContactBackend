@@ -3,6 +3,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -114,13 +115,86 @@ type Event struct {
 
 // Event type constants shared by API and worker.
 const (
-	EventUserRegistered = "user.registered"
-	EventUserBlocked    = "user.blocked"
-	EventContactCreated = "contact.created"
-	EventNumberLookedUp = "number.looked_up"
-	EventTagAdded       = "number.tag_added"
-	EventSpamReported   = "number.spam_reported"
+	EventUserRegistered     = "user.registered"
+	EventUserBlocked        = "user.blocked"
+	EventContactCreated     = "contact.created"
+	EventNumberLookedUp     = "number.looked_up"
+	EventTagAdded           = "number.tag_added"
+	EventSpamReported       = "number.spam_reported"
+	EventNumberNameAdded    = "number.name_added"
+	EventNumberNameRemoved  = "number.name_removed"
+	EventSpamReportDeleted  = "number.spam_deleted"
+	EventAdminNumberViewed  = "admin.number_viewed"
+	EventAdminNumberUpdated = "admin.number_updated"
 )
+
+// NumberName is a community-submitted name for a phone number. Each user has
+// at most one vote per number; changing the vote updates this row.
+type NumberName struct {
+	ID          uuid.UUID  `json:"id"`
+	Phone       string     `json:"phone"`
+	Name        string     `json:"name"`
+	SubmittedBy *uuid.UUID `json:"submitted_by,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// NameCount aggregates identical name votes for one number.
+type NameCount struct {
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}
+
+// SpamCategoryCount is one bucket of the spam summary.
+type SpamCategoryCount struct {
+	Category string `json:"category"`
+	Count    int64  `json:"count"`
+}
+
+// SpamSummary is the public, privacy-preserving spam picture for a number.
+type SpamSummary struct {
+	Phone          string              `json:"phone"`
+	Total          int64               `json:"total"`
+	ByCategory     []SpamCategoryCount `json:"by_category"`
+	LastReportedAt *time.Time          `json:"last_reported_at,omitempty"`
+}
+
+// AuditEvent is a persisted Kafka event; it doubles as the admin audit trail.
+type AuditEvent struct {
+	ID          uuid.UUID       `json:"id"`
+	Topic       string          `json:"topic"`
+	Type        string          `json:"event_type"`
+	AggregateID string          `json:"aggregate_id"`
+	Payload     json.RawMessage `json:"payload"`
+	OccurredAt  time.Time       `json:"occurred_at"`
+	ConsumedAt  time.Time       `json:"consumed_at"`
+}
+
+// AuditFilter selects a page of audit events.
+type AuditFilter struct {
+	EventType   string
+	AggregateID string
+	Page        int
+	PerPage     int
+}
+
+// ContactStats is a compact per-user phone-book summary.
+type ContactStats struct {
+	Total     int64
+	Favorites int64
+}
+
+// UserStats is the personal dashboard returned by /users/me/stats.
+type UserStats struct {
+	UserID         uuid.UUID `json:"user_id"`
+	Contacts       int64     `json:"contacts"`
+	Favorites      int64     `json:"favorites"`
+	TagsAdded      int64     `json:"tags_added"`
+	SpamReports    int64     `json:"spam_reports"`
+	NamesSubmitted int64     `json:"names_submitted"`
+	ActiveSessions int64     `json:"active_sessions"`
+	MemberSince    time.Time `json:"member_since"`
+}
 
 // Pagination describes a page request.
 type Pagination struct {

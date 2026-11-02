@@ -279,6 +279,236 @@ func (r *NumberRepo) TopTags(ctx context.Context, limit int) ([]domain.TagCount,
 	return out, rows.Err()
 }
 
+// UpdateDetails applies a partial admin edit. A nil pointer keeps the current
+// value; a pointer to an empty string clears the column.
+func (r *NumberRepo) UpdateDetails(ctx context.Context, phone string, name, carrier, country *string) (*domain.Number, error) {
+	defer observe("numbers.update_details", time.Now())
+	return scanNumber(r.db.QueryRow(ctx, `UPDATE numbers SET
+			name    = CASE WHEN $2::text IS NULL THEN name    ELSE NULLIF($2::text, '') END,
+			carrier = CASE WHEN $3::text IS NULL THEN carrier ELSE NULLIF($3::text, '') END,
+			country = CASE WHEN $4::text IS NULL THEN country ELSE NULLIF($4::text, '') END
+		WHERE phone = $1
+		RETURNING `+numberColumns, phone, name, carrier, country))
+}
+
+const nameColumns = `id, phone, name, submitted_by, created_at, updated_at`
+
+func scanName(row pgx.Row) (*domain.NumberName, error) {
+	var n domain.NumberName
+	if err := row.Scan(&n.ID, &n.Phone, &n.Name, &n.SubmittedBy, &n.CreatedAt, &n.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return &n, nil
+}
+
+// AddName records one name vote per user and number. Submitting a different
+// name again replaces the previous vote instead of inflating its weight.
+func (r *NumberRepo) AddName(ctx context.Context, n *domain.NumberName) error {
+	defer observe("number_names.add", time.Now())
+	return r.db.QueryRow(ctx, `INSERT INTO number_names (id, phone, name, submitted_by)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (phone, submitted_by) WHERE submitted_by IS NOT NULL
+		DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()
+		RETURNING id, phone, name, submitted_by, created_at, updated_at`,
+		n.ID, n.Phone, n.Name, n.SubmittedBy,
+	).Scan(&n.ID, &n.Phone, &n.Name, &n.SubmittedBy, &n.CreatedAt, &n.UpdatedAt)
+}
+
+// GetName fetches one name vote by id.
+func (r *NumberRepo) GetName(ctx context.Context, id uuid.UUID) (*domain.NumberName, error) {
+	defer observe("number_names.get", time.Now())
+	return scanName(r.db.QueryRow(ctx, `SELECT `+nameColumns+` FROM number_names WHERE id = $1`, id))
+}
+
+// DeleteName removes one name vote.
+func (r *NumberRepo) DeleteName(ctx context.Context, id uuid.UUID) error {
+	defer observe("number_names.delete", time.Now())
+	tag, err := r.db.Exec(ctx, `DELETE FROM number_names WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// ListNames returns raw name votes for the admin dossier.
+func (r *NumberRepo) ListNames(ctx context.Context, phone string) ([]domain.NumberName, error) {
+	defer observe("number_names.list", time.Now())
+	rows, err := r.db.Query(ctx, `SELECT `+nameColumns+` FROM number_names
+		WHERE phone = $1 ORDER BY updated_at DESC LIMIT 100`, phone)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.NumberName, 0, 8)
+	for rows.Next() {
+		n, err := scanName(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *n)
+	}
+	return out, rows.Err()
+}
+
+// ListNameCounts aggregates identical name votes, most popular first.
+func (r *NumberRepo) ListNameCounts(ctx context.Context, phone string) ([]domain.NameCount, error) {
+	defer observe("number_names.counts", time.Now())
+	rows, err := r.db.Query(ctx, `SELECT name, COUNT(*) AS c FROM number_names
+		WHERE phone = $1 GROUP BY name ORDER BY c DESC, LOWER(name) ASC LIMIT 20`, phone)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.NameCount, 0, 8)
+	for rows.Next() {
+		var nc domain.NameCount
+		if err := rows.Scan(&nc.Name, &nc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, nc)
+	}
+	return out, rows.Err()
+}
+
+// RecomputeDisplayName refreshes numbers.name with the most popular vote.
+func (r *NumberRepo) RecomputeDisplayName(ctx context.Context, phone string) error {
+	defer observe("numbers.recompute_name", time.Now())
+	_, err := r.db.Exec(ctx, `UPDATE numbers n SET name = (
+			SELECT nn.name FROM number_names nn WHERE nn.phone = n.phone
+			GROUP BY nn.name ORDER BY COUNT(*) DESC, LOWER(nn.name) ASC LIMIT 1
+		) WHERE n.phone = $1`, phone)
+	return err
+}
+
+// GetSpamReport fetches one report for moderation.
+func (r *NumberRepo) GetSpamReport(ctx context.Context, id uuid.UUID) (*domain.SpamReport, error) {
+	defer observe("spam_reports.get", time.Now())
+	var rep domain.SpamReport
+	err := r.db.QueryRow(ctx, `SELECT id, phone, reporter_id, category, COALESCE(comment, ''), created_at
+		FROM spam_reports WHERE id = $1`, id).
+		Scan(&rep.ID, &rep.Phone, &rep.ReporterID, &rep.Category, &rep.Comment, &rep.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
+// DeleteSpamReport removes one report; the caller recomputes the score.
+func (r *NumberRepo) DeleteSpamReport(ctx context.Context, id uuid.UUID) error {
+	defer observe("spam_reports.delete", time.Now())
+	tag, err := r.db.Exec(ctx, `DELETE FROM spam_reports WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// ListReportsForPhone returns the newest reports for one number (admin view).
+func (r *NumberRepo) ListReportsForPhone(ctx context.Context, phone string, limit int) ([]domain.SpamReport, error) {
+	defer observe("spam_reports.list_for_phone", time.Now())
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.db.Query(ctx, `SELECT id, phone, reporter_id, category, COALESCE(comment, ''), created_at
+		FROM spam_reports WHERE phone = $1 ORDER BY created_at DESC LIMIT $2`, phone, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.SpamReport, 0, limit)
+	for rows.Next() {
+		var rep domain.SpamReport
+		if err := rows.Scan(&rep.ID, &rep.Phone, &rep.ReporterID, &rep.Category, &rep.Comment, &rep.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, rep)
+	}
+	return out, rows.Err()
+}
+
+// SpamSummary returns counts by category without exposing reporters.
+func (r *NumberRepo) SpamSummary(ctx context.Context, phone string) (*domain.SpamSummary, error) {
+	defer observe("spam_reports.summary", time.Now())
+	summary := &domain.SpamSummary{Phone: phone, ByCategory: make([]domain.SpamCategoryCount, 0, 6)}
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*), MAX(created_at) FROM spam_reports WHERE phone = $1`, phone).
+		Scan(&summary.Total, &summary.LastReportedAt); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.Query(ctx, `SELECT category, COUNT(*) FROM spam_reports
+		WHERE phone = $1 GROUP BY category ORDER BY COUNT(*) DESC, category ASC`, phone)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c domain.SpamCategoryCount
+		if err := rows.Scan(&c.Category, &c.Count); err != nil {
+			return nil, err
+		}
+		summary.ByCategory = append(summary.ByCategory, c)
+	}
+	return summary, rows.Err()
+}
+
+// TopTrending returns numbers with the highest lookup counters.
+func (r *NumberRepo) TopTrending(ctx context.Context, limit int) ([]domain.Number, error) {
+	defer observe("numbers.trending", time.Now())
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	rows, err := r.db.Query(ctx, `SELECT `+numberColumns+` FROM numbers
+		WHERE lookups_count > 0 ORDER BY lookups_count DESC, updated_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Number, 0, limit)
+	for rows.Next() {
+		n, err := scanNumber(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *n)
+	}
+	return out, rows.Err()
+}
+
+// CountReportsByUser counts spam reports submitted by one user.
+func (r *NumberRepo) CountReportsByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	defer observe("spam_reports.count_by_user", time.Now())
+	var n int64
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM spam_reports WHERE reporter_id = $1`, userID).Scan(&n)
+	return n, err
+}
+
+// CountTagsByUser counts tags created by one user.
+func (r *NumberRepo) CountTagsByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	defer observe("tags.count_by_user", time.Now())
+	var n int64
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM tags WHERE created_by = $1`, userID).Scan(&n)
+	return n, err
+}
+
+// CountNamesByUser counts name votes submitted by one user.
+func (r *NumberRepo) CountNamesByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	defer observe("number_names.count_by_user", time.Now())
+	var n int64
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM number_names WHERE submitted_by = $1`, userID).Scan(&n)
+	return n, err
+}
+
 var _ domain.NumberRepository = (*NumberRepo)(nil)
 
 // ListReports returns all spam reports, newest first (admin endpoint).

@@ -9,19 +9,22 @@ import (
 	"github.com/getcontact/backend/internal/domain"
 	"github.com/getcontact/backend/internal/platform"
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 )
 
 // UserService implements profile self-service.
 type UserService struct {
-	users  domain.UserRepository
-	tokens domain.TokenRepository
-	argon  platform.ArgonParams
-	log    *slog.Logger
+	users    domain.UserRepository
+	contacts domain.ContactRepository
+	numbers  domain.NumberRepository
+	tokens   domain.TokenRepository
+	argon    platform.ArgonParams
+	log      *slog.Logger
 }
 
 // NewUserService wires profile use cases.
-func NewUserService(users domain.UserRepository, tokens domain.TokenRepository, argon platform.ArgonParams, log *slog.Logger) *UserService {
-	return &UserService{users: users, tokens: tokens, argon: argon, log: log}
+func NewUserService(users domain.UserRepository, contacts domain.ContactRepository, numbers domain.NumberRepository, tokens domain.TokenRepository, argon platform.ArgonParams, log *slog.Logger) *UserService {
+	return &UserService{users: users, contacts: contacts, numbers: numbers, tokens: tokens, argon: argon, log: log}
 }
 
 // UpdateMeInput uses pointers so PATCH can distinguish "absent" from "empty".
@@ -107,6 +110,47 @@ func (s *UserService) ChangePassword(ctx context.Context, userID uuid.UUID, curr
 		s.log.Warn("failed to revoke sessions after password change", "user_id", u.ID, "error", err)
 	}
 	return nil
+}
+
+// Stats returns the caller's personal dashboard. Independent counters are read
+// concurrently so the endpoint stays fast as the phone book grows.
+func (s *UserService) Stats(ctx context.Context, userID uuid.UUID) (*domain.UserStats, error) {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, apperr.NotFound("user")
+		}
+		return nil, apperr.Internal(err)
+	}
+	stats := &domain.UserStats{UserID: u.ID, MemberSince: u.CreatedAt}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		var cs domain.ContactStats
+		cs, err = s.contacts.StatsByOwner(gctx, userID)
+		stats.Contacts, stats.Favorites = cs.Total, cs.Favorites
+		return err
+	})
+	g.Go(func() (err error) {
+		stats.TagsAdded, err = s.numbers.CountTagsByUser(gctx, userID)
+		return err
+	})
+	g.Go(func() (err error) {
+		stats.SpamReports, err = s.numbers.CountReportsByUser(gctx, userID)
+		return err
+	})
+	g.Go(func() (err error) {
+		stats.NamesSubmitted, err = s.numbers.CountNamesByUser(gctx, userID)
+		return err
+	})
+	g.Go(func() (err error) {
+		stats.ActiveSessions, err = s.tokens.CountActiveForUser(gctx, userID)
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		return nil, apperr.Internal(err)
+	}
+	return stats, nil
 }
 
 // DeleteMe permanently deletes the account (contacts and sessions cascade).

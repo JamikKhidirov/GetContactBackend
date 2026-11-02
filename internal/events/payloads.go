@@ -63,3 +63,40 @@ type SpamReported struct {
 	Category   string    `json:"category"`
 	ReporterID uuid.UUID `json:"reporter_id"`
 }
+
+// NumberNameAdded is emitted when a user adds or changes a name vote.
+type NumberNameAdded struct {
+	NameID uuid.UUID `json:"name_id"`
+	Phone  string    `json:"phone"`
+	Name   string    `json:"name"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// NumberNameRemoved is emitted when a name vote is deleted.
+type NumberNameRemoved struct {
+	NameID  uuid.UUID `json:"name_id"`
+	Phone   string    `json:"phone"`
+	ActorID uuid.UUID `json:"actor_id"`
+}
+
+// SpamReportDeleted is emitted when an admin removes a spam report.
+type SpamReportDeleted struct {
+	ReportID uuid.UUID `json:"report_id"`
+	Phone    string    `json:"phone"`
+	ActorID  uuid.UUID `json:"actor_id"`
+}
+
+// AdminNumberViewed records every admin dossier read for accountability.
+type AdminNumberViewed struct {
+	Phone   string    `json:"phone"`
+	ActorID uuid.UUID `json:"actor_id"`
+}
+
+// AdminNumberUpdated is emitted after an admin edits a number profile.
+type AdminNumberUpdated struct {
+	Phone   string    `json:"phone"`
+	ActorID uuid.UUID `json:"actor_id"`
+	Name    string    `json:"name,omitempty"`
+	Carrier string    `json:"carrier,omitempty"`
+	Country string    `json:"country,omitempty"`
+}

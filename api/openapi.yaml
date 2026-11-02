@@ -351,6 +351,25 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+  /api/v1/users/me/stats:
+    get:
+      tags: [Users]
+      summary: Личная статистика
+      description: |
+        Счётчики контактов, избранного, тегов, репортов, предложенных имён и
+        активных сессий. Независимые запросы выполняются параллельно.
+      responses:
+        '200':
+          description: Дашборд пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUserStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
   /api/v1/contacts:
     get:
       tags: [Contacts]
@@ -473,7 +492,7 @@ paths:
       summary: Топ спам-номеров
       security: []
       parameters:
-        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/LimitTop'
       responses:
         '200':
           description: Рейтинг номеров
@@ -481,6 +500,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DataNumbers'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/numbers/trending:
+    get:
+      tags: [Numbers]
+      summary: Тренды по просмотрам
+      description: Номера с наибольшим счётчиком lookup за всё время.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/LimitTrending'
+      responses:
+        '200':
+          description: Рейтинг просматриваемых номеров
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNumbers'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/numbers/lookup:
+    post:
+      tags: [Numbers]
+      summary: Пакетный caller-ID lookup
+      description: |
+        Определяет до 100 номеров за один запрос — удобно для синхронизации
+        журнала звонков. Невалидные номера не ломают весь пакет: для них
+        возвращается элемент с полем `error`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchLookupRequest'
+            example:
+              phones: ["+79991234567", "8 999 765-43-21"]
+      responses:
+        '200':
+          description: Результаты по каждому номеру
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataBatchLookupResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/spam/categories:
+    get:
+      tags: [Numbers]
+      summary: Каталог категорий спама
+      description: Единый источник допустимых значений для POST /numbers/{phone}/spam.
+      security: []
+      responses:
+        '200':
+          description: Упорядоченный каталог категорий
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataSpamCategories'
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /api/v1/numbers/{phone}:
     get:
@@ -564,13 +649,95 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/numbers/{phone}/names:
+    parameters:
+      - $ref: '#/components/parameters/Phone'
+    get:
+      tags: [Numbers]
+      summary: Имена номера из сообщества
+      description: Агрегированные варианты имени, отсортированные по числу голосов.
+      security: []
+      responses:
+        '200':
+          description: Варианты имени
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNameCounts'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    post:
+      tags: [Numbers]
+      summary: Предложить имя для номера
+      description: |
+        Один голос на пользователя и номер. Повторная отправка заменяет
+        предыдущий вариант, а не увеличивает его вес. Отображаемое имя
+        пересчитывается по самому популярному варианту.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NumberNameInput'
+            example:
+              name: "Иван Петров"
+      responses:
+        '201':
+          description: Голос сохранён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNumberName'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/numbers/{phone}/names/{nameID}:
+    delete:
+      tags: [Numbers]
+      summary: Удалить голос за имя
+      description: Доступно автору голоса или администратору.
+      parameters:
+        - $ref: '#/components/parameters/Phone'
+        - $ref: '#/components/parameters/NameID'
+      responses:
+        '204':
+          description: Голос удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/numbers/{phone}/spam:
+    parameters:
+      - $ref: '#/components/parameters/Phone'
+    get:
+      tags: [Numbers]
+      summary: Сводка спам-репортов
+      description: Агрегаты по категориям без раскрытия авторов репортов.
+      security: []
+      responses:
+        '200':
+          description: Сводка по номеру
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataSpamSummary'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     post:
       tags: [Numbers]
       summary: Пожаловаться на спам
       description: Один активный репорт на пользователя и номер. Повтор → 409.
-      parameters:
-        - $ref: '#/components/parameters/Phone'
       requestBody:
         required: true
         content:
@@ -615,8 +782,8 @@ paths:
       summary: Поиск по номерам и контактам
       description: Ищет по номеру/имени в общем справочнике и в личной книге.
       parameters:
-        - $ref: '#/components/parameters/Q'
-        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/SearchQ'
+        - $ref: '#/components/parameters/SearchLimit'
       responses:
         '200':
           description: Результаты поиска
@@ -749,6 +916,130 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/v1/admin/reports/{reportID}:
+    delete:
+      tags: [Admin]
+      summary: Удалить спам-репорт
+      description: |
+        Модерация: удаляет репорт, пересчитывает spam score номера, очищает
+        кэш caller-ID и пишет событие `number.spam_deleted` в аудит.
+      parameters:
+        - $ref: '#/components/parameters/ReportID'
+      responses:
+        '204':
+          description: Репорт удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/admin/numbers/{phone}:
+    parameters:
+      - $ref: '#/components/parameters/Phone'
+    get:
+      tags: [Admin]
+      summary: Полное досье номера
+      description: |
+        Admin-only представление «от и до»: профиль, теги, все голоса за имя,
+        агрегаты имён, последние репорты, сводка по категориям и audit-события.
+        Каждое успешное чтение публикует `admin.number_viewed` с ID администратора.
+      responses:
+        '200':
+          description: Досье номера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNumberDossier'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Validation'
+    patch:
+      tags: [Admin]
+      summary: Редактировать профиль номера
+      description: |
+        Частичное обновление: отсутствующее поле не меняется, пустая строка
+        очищает поле. Изменение инвалидирует кэш и пишет `admin.number_updated`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminNumberUpdate'
+            example:
+              name: "Иван Петров"
+              carrier: "MTS"
+      responses:
+        '200':
+          description: Обновлённый профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNumber'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Validation'
+
+  /api/v1/admin/audit:
+    get:
+      tags: [Admin]
+      summary: Лента аудита
+      description: |
+        Все события, дошедшие до `audit_events` через Kafka worker, новые сверху.
+        Фильтры комбинируются по AND. Используется для расследований и
+        подтверждения того, что досье номера действительно смотрели.
+      parameters:
+        - $ref: '#/components/parameters/EventType'
+        - $ref: '#/components/parameters/AggregateID'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Страница audit-событий
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAudit'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/users/{id}/summary:
+    get:
+      tags: [Admin]
+      summary: Полная карточка пользователя
+      description: |
+        Профиль, счётчики активности и последние audit-события по этому user_id.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Сводка пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUserSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -774,11 +1065,30 @@ components:
       schema:
         type: string
         format: uuid
+    NameID:
+      name: nameID
+      in: path
+      required: true
+      description: UUID голоса за имя
+      schema:
+        type: string
+        format: uuid
+    ReportID:
+      name: reportID
+      in: path
+      required: true
+      description: UUID спам-репорта
+      schema:
+        type: string
+        format: uuid
     Phone:
       name: phone
       in: path
       required: true
-      description: Номер в международном или локальном формате (нормализуется).
+      description: |
+        Номер в международном или локальном формате. Нормализуется: принимаются
+        `+7…`, `8…`, `00…`, скобки, пробелы, дефисы и full-width цифры;
+        результат всегда `+<digits>` (8..15 цифр).
       schema:
         type: string
         example: "+79991234567"
@@ -791,6 +1101,30 @@ components:
         type: string
         minLength: 2
         maxLength: 64
+    SearchQ:
+      name: q
+      in: query
+      required: true
+      description: Поисковая строка (2..64 символа)
+      schema:
+        type: string
+        minLength: 2
+        maxLength: 64
+    EventType:
+      name: event_type
+      in: query
+      required: false
+      description: Точное имя типа события, например `admin.number_viewed`
+      schema:
+        type: string
+        example: admin.number_viewed
+    AggregateID:
+      name: aggregate_id
+      in: query
+      required: false
+      description: ID агрегата (номер телефона или UUID пользователя)
+      schema:
+        type: string
     Favorite:
       name: favorite
       in: query
@@ -823,6 +1157,36 @@ components:
         type: integer
         minimum: 1
         maximum: 100
+        default: 20
+    LimitTop:
+      name: limit
+      in: query
+      required: false
+      description: Количество номеров в рейтинге
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 10
+    LimitTrending:
+      name: limit
+      in: query
+      required: false
+      description: Количество номеров в рейтинге
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 10
+    SearchLimit:
+      name: limit
+      in: query
+      required: false
+      description: Максимум результатов на каждую коллекцию
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
         default: 20
 
   responses:
@@ -1267,6 +1631,232 @@ components:
           type: integer
           format: int64
 
+    NumberNameInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 64
+          example: "Иван Петров"
+
+    NumberName:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        phone:
+          type: string
+        name:
+          type: string
+        submitted_by:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    NameCount:
+      type: object
+      properties:
+        name:
+          type: string
+        count:
+          type: integer
+          format: int64
+
+    SpamCategory:
+      type: object
+      properties:
+        code:
+          type: string
+          enum: [fraud, scam, telemarketing, robocall, spam, other]
+        label:
+          type: string
+        description:
+          type: string
+        severity:
+          type: string
+          enum: [high, medium, low, info]
+
+    SpamCategoryCount:
+      type: object
+      properties:
+        category:
+          type: string
+        count:
+          type: integer
+          format: int64
+
+    SpamSummary:
+      type: object
+      properties:
+        phone:
+          type: string
+        total:
+          type: integer
+          format: int64
+        by_category:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpamCategoryCount'
+        last_reported_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    BatchLookupRequest:
+      type: object
+      required: [phones]
+      properties:
+        phones:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            example: "+79991234567"
+
+    BatchLookupItem:
+      type: object
+      properties:
+        phone:
+          type: string
+        number:
+          $ref: '#/components/schemas/Number'
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        error:
+          type: string
+          description: Причина, по которой конкретный номер не удалось определить.
+
+    BatchLookupResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchLookupItem'
+        requested:
+          type: integer
+        returned:
+          type: integer
+
+    UserStats:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        contacts:
+          type: integer
+          format: int64
+        favorites:
+          type: integer
+          format: int64
+        tags_added:
+          type: integer
+          format: int64
+        spam_reports:
+          type: integer
+          format: int64
+        names_submitted:
+          type: integer
+          format: int64
+        active_sessions:
+          type: integer
+          format: int64
+        member_since:
+          type: string
+          format: date-time
+
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        topic:
+          type: string
+        event_type:
+          type: string
+        aggregate_id:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        occurred_at:
+          type: string
+          format: date-time
+        consumed_at:
+          type: string
+          format: date-time
+
+    NumberDossier:
+      type: object
+      properties:
+        number:
+          $ref: '#/components/schemas/Number'
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        names:
+          type: array
+          items:
+            $ref: '#/components/schemas/NumberName'
+        name_counts:
+          type: array
+          items:
+            $ref: '#/components/schemas/NameCount'
+        reports:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpamReport'
+        spam:
+          $ref: '#/components/schemas/SpamSummary'
+        audit:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+
+    UserSummary:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        stats:
+          $ref: '#/components/schemas/UserStats'
+        recent_audit:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+
+    AdminNumberUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          maxLength: 64
+          description: Пустая строка очищает значение.
+        carrier:
+          type: string
+          maxLength: 64
+          description: Пустая строка очищает значение.
+        country:
+          type: string
+          maxLength: 64
+          description: Пустая строка очищает значение.
+
     LookupResult:
       type: object
       properties:
@@ -1405,11 +1995,60 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Number'
+    DataNumber:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Number'
     DataLookupResult:
       type: object
       properties:
         data:
           $ref: '#/components/schemas/LookupResult'
+    DataNumberName:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/NumberName'
+    DataNameCounts:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/NameCount'
+    DataSpamCategories:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpamCategory'
+    DataSpamSummary:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SpamSummary'
+    DataBatchLookupResult:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/BatchLookupResult'
+    DataUserStats:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/UserStats'
+    DataNumberDossier:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/NumberDossier'
+    DataUserSummary:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/UserSummary'
     DataImportResult:
       type: object
       properties:
@@ -1451,5 +2090,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SpamReport'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    PaginatedAudit:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
         meta:
           $ref: '#/components/schemas/Meta'

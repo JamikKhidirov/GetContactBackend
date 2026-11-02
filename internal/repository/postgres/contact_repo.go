@@ -149,4 +149,13 @@ func (r *ContactRepo) Count(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+// StatsByOwner returns the size of a user's phone book and favourite count.
+func (r *ContactRepo) StatsByOwner(ctx context.Context, ownerID uuid.UUID) (domain.ContactStats, error) {
+	defer observe("contacts.stats_by_owner", time.Now())
+	var s domain.ContactStats
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE is_favorite)
+		FROM contacts WHERE owner_id = $1`, ownerID).Scan(&s.Total, &s.Favorites)
+	return s, err
+}
+
 var _ domain.ContactRepository = (*ContactRepo)(nil)

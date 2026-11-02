@@ -100,6 +100,92 @@ func (a *API) topSpam(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, numbers)
 }
 
+func (a *API) trendingNumbers(w http.ResponseWriter, r *http.Request) {
+	numbers, err := a.numbers.Trending(r.Context(), limitParam(r, 10, 50))
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusOK, numbers)
+}
+
+func (a *API) numberNames(w http.ResponseWriter, r *http.Request) {
+	names, err := a.numbers.Names(r.Context(), pathParam(r, "phone"))
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusOK, names)
+}
+
+type addNameRequest struct {
+	Name string `json:"name"`
+}
+
+func (a *API) addNumberName(w http.ResponseWriter, r *http.Request) {
+	uid, _ := userIDFrom(r.Context())
+	var req addNameRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	name, err := a.numbers.AddName(r.Context(), pathParam(r, "phone"), uid, req.Name)
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusCreated, name)
+}
+
+func (a *API) deleteNumberName(w http.ResponseWriter, r *http.Request) {
+	uid, _ := userIDFrom(r.Context())
+	nameID, err := pathUUID(r, "nameID")
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	if err := a.numbers.DeleteName(r.Context(), pathParam(r, "phone"), nameID, uid, domain.Role(roleFrom(r.Context()))); err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
+func (a *API) numberSpamSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := a.numbers.SpamSummary(r.Context(), pathParam(r, "phone"))
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusOK, summary)
+}
+
+func (a *API) spamCategories(w http.ResponseWriter, r *http.Request) {
+	writeData(w, http.StatusOK, a.numbers.SpamCategories())
+}
+
+type batchLookupRequest struct {
+	Phones []string `json:"phones"`
+}
+
+func (a *API) batchLookup(w http.ResponseWriter, r *http.Request) {
+	var uid *uuid.UUID
+	if id, ok := userIDFrom(r.Context()); ok {
+		uid = &id
+	}
+	var req batchLookupRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	result, err := a.numbers.BatchLookup(r.Context(), req.Phones, uid)
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusOK, result)
+}
+
 func (a *API) search(w http.ResponseWriter, r *http.Request) {
 	uid, _ := userIDFrom(r.Context())
 	result, err := a.searchSvc.Search(r.Context(), uid, r.URL.Query().Get("q"), limitParam(r, 20, 50))

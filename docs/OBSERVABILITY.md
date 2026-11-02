@@ -113,14 +113,24 @@ sum by (status) (rate(getcontact_http_requests_total{status=~"4.."}[5m]))
 ### Латентность
 
 ```promql
-# p50 / p95 / p99
+# p50 / p95 / p97 / p99
 histogram_quantile(0.50, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))
 histogram_quantile(0.95, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))
+histogram_quantile(0.97, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))
 histogram_quantile(0.99, sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m])))
 
-# p95 по маршруту
-histogram_quantile(0.95,
+# p97 по маршруту
+histogram_quantile(0.97,
   sum by (le, route) (rate(getcontact_http_request_duration_seconds_bucket[5m])))
+```
+
+p97 закреплён как основной SLO. Запросы записаны в
+`deploy/docker/prometheus/rules.yml` (и в `PrometheusRule` для Kubernetes):
+
+```promql
+getcontact:http_request_duration_seconds:p97_5m
+getcontact:http_request_duration_seconds:p97_5m:by_route
+getcontact:db_query_duration_seconds:p97_5m
 ```
 
 ### Кэш
@@ -138,13 +148,13 @@ sum(rate(getcontact_cache_operations_total{result="error"}[5m]))
 ### База данных
 
 ```promql
-# p95 по операциям
-histogram_quantile(0.95,
+# p97 по операциям
+histogram_quantile(0.97,
   sum by (le, operation) (rate(getcontact_db_query_duration_seconds_bucket[5m])))
 
 # Самая медленная операция
 topk(5,
-  histogram_quantile(0.95,
+  histogram_quantile(0.97,
     sum by (le, operation) (rate(getcontact_db_query_duration_seconds_bucket[5m]))))
 ```
 
@@ -187,19 +197,20 @@ clamp_min(sum(rate(getcontact_auth_attempts_total{operation="login"}[15m])), 0.0
 |---|---|---|---|
 | 1 | Requests / sec | stat | `sum(rate(...requests_total[5m]))` |
 | 2 | 5xx error rate | stat | доля 5xx |
-| 3 | p95 latency | stat | `histogram_quantile(0.95, ...)` |
+| 3 | p97 latency | stat | `histogram_quantile(0.97, ...)` |
 | 4 | In-flight requests | stat | `...in_flight_requests` |
 | 5 | Request rate by route | timeseries | `sum by (route)` |
 | 6 | Responses by status | timeseries | `sum by (status)` |
-| 7 | Latency percentiles | timeseries | p50/p95/p99 |
+| 7 | Latency percentiles | timeseries | p50/p95/p97/p99 |
 | 8 | Redis cache hit ratio | stat | hit / get |
 | 9 | Caller-ID lookups | timeseries | `sum by (result)` |
-| 10 | Database p95 by operation | timeseries | `sum by (operation)` |
+| 10 | Database p97 by operation | timeseries | `sum by (operation)` |
 | 11 | Kafka events | timeseries | `sum by (direction,topic,result)` |
 | 12 | Spam reports (24h) | stat | `increase(...[24h])` |
 | 13 | Tags added (24h) | stat | `increase(...[24h])` |
 | 14 | Heap in use | timeseries | `go_memstats_heap_inuse_bytes` |
 | 15 | Goroutines | timeseries | `go_goroutines` |
+| 16 | Route p97 latency | timeseries | recorded `...:p97_5m:by_route` |
 
 Ссылки в шапке дашборда ведут на Swagger UI и Prometheus.
 
@@ -221,11 +232,12 @@ clamp_min(sum(rate(getcontact_auth_attempts_total{operation="login"}[15m])), 0.0
 | `GetContactApiDown` | `up{job="getcontact-api"} == 0` | 2m | critical |
 | `GetContactWorkerDown` | `up{job="getcontact-worker"} == 0` | 2m | critical |
 | `GetContactHigh5xxRate` | 5xx > 5% | 5m | warning |
-| `GetContactHighLatencyP95` | p95 > 1s | 5m | warning |
+| `GetContactHighLatencyP97` | p97 > 1s | 5m | warning |
+| `GetContactRouteLatencyP97High` | route p97 > 2s | 10m | warning |
 | `GetContactNoTraffic` | RPS == 0 | 10m | info |
 | `GetContactCacheHitRateLow` | hit rate < 50% | 15m | warning |
 | `GetContactKafkaPublishErrors` | publish errors > 0 | 1m | warning |
-| `GetContactDBLatencyHigh` | DB p95 > 500ms | 5m | warning |
+| `GetContactDBLatencyHigh` | DB p97 > 500ms | 5m | warning |
 | `GetContactSpamReportSurge` | > 500 reports / 10m | 1m | info |
 | `GetContactTargetDown` (k8s) | `up{namespace="getcontact"} == 0` | 2m | critical |
 
@@ -243,8 +255,8 @@ clamp_min(sum(rate(getcontact_auth_attempts_total{operation="login"}[15m])), 0.0
 2. Проверить логи с `request_id`.
 3. Проверить `getcontact_db_query_duration_seconds` и `/readyz`.
 
-**p95 > 1s**
-1. Разбить по route и operation.
+**p97 > 1s**
+1. Разбить по route и operation; посмотреть панель `Route p97 latency`.
 2. Проверить cache hit ratio — падение кэша увеличивает нагрузку на БД.
 3. Проверить пул соединений (`DB_MAX_CONNS`) и медленные SQL (`pg_stat_statements`).
 
@@ -259,7 +271,7 @@ clamp_min(sum(rate(getcontact_auth_attempts_total{operation="login"}[15m])), 0.0
 2. Проверить `KAFKA_BROKERS`, listener'ы (`kafka:9092` внутри сети).
 3. Проверить заполненность диска и `getcontact.events.dlq`.
 
-**DB p95 > 500ms**
+**DB p97 > 500ms**
 1. `topk` по operation.
 2. `EXPLAIN (ANALYZE, BUFFERS)` для медленного запроса.
 3. Проверить наличие/использование индексов, bloat, autovacuum.
@@ -299,7 +311,7 @@ clamp_min(sum(rate(getcontact_auth_attempts_total{operation="login"}[15m])), 0.0
 | SLI | Цель | Как считать |
 |---|---|---|
 | Availability | 99.9% | `1 - 5xx/total` |
-| Latency p95 | < 300 ms | histogram_quantile |
+| Latency p97 | < 300 ms | histogram_quantile(0.97) |
 | Error budget | 0.1% | 5xx за 30 дней |
 | Cache hit | > 70% | hit/get |
 | Kafka lag | < 1000 | `kafka_consumergroup_lag` (JMX exporter) |

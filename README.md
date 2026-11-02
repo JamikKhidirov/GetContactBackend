@@ -40,10 +40,12 @@ Postman, unit- и black-box интеграционные тесты.
 ### 🧠 Домен
 - 🔎 Caller-ID lookup с кэшем и счётчиком
 - 🏷️ Community-теги с weight и анти-накруткой
+- 👤 Community-имена: один голос на пользователя
 - 🚨 Спам-репорты, spam score 0..100
 - 📇 Личная телефонная книга + bulk import
 - 🔍 Единый поиск по номерам и контактам
-- 🛡️ Админка: статистика, блокировки, модерация
+- 📦 Пакетный lookup до 100 номеров
+- 🛡️ Админка: статистика, блокировки, модерация, аудит
 
 </td>
 <td width="50%">
@@ -250,6 +252,7 @@ sequenceDiagram
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
 | `GET` | `/api/v1/users/{id}` | 🔑 | Публичный профиль (телефон маскируется) |
+| `GET` | `/api/v1/users/me/stats` | 🔑 | Личная статистика и счётчики |
 | `PATCH` | `/api/v1/users/me` | 🔑 | Обновить имя/email |
 | `PUT` | `/api/v1/users/me/password` | 🔑 | Сменить пароль, отозвать сессии |
 | `DELETE` | `/api/v1/users/me` | 🔑 | Удалить аккаунт каскадно |
@@ -270,12 +273,24 @@ sequenceDiagram
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
 | `GET` | `/api/v1/numbers/{phone}` | 🔓+ | Caller-ID карточка + теги |
+| `POST` | `/api/v1/numbers/lookup` | 🔑 | Пакетный lookup до 100 номеров |
+| `GET` | `/api/v1/numbers/trending` | 🔓 | Номера с максимумом просмотров |
 | `GET` | `/api/v1/numbers/{phone}/tags` | 🔓 | Теги номера |
 | `POST` | `/api/v1/numbers/{phone}/tags` | 🔑 | Добавить/усилить тег |
 | `DELETE` | `/api/v1/numbers/{phone}/tags/{tagID}` | 🔑 | Удалить тег (автор или 👑) |
+| `GET` | `/api/v1/numbers/{phone}/names` | 🔓 | Варианты имени из сообщества |
+| `POST` | `/api/v1/numbers/{phone}/names` | 🔑 | Предложить имя (1 голос) |
+| `DELETE` | `/api/v1/numbers/{phone}/names/{nameID}` | 🔑 | Удалить голос (автор или 👑) |
+| `GET` | `/api/v1/numbers/{phone}/spam` | 🔓 | Сводка репортов по категориям |
 | `POST` | `/api/v1/numbers/{phone}/spam` | 🔑 | Спам-репорт (1 на пользователя) |
 | `GET` | `/api/v1/numbers/spam/top` | 🔓 | Топ спам-номеров |
+| `GET` | `/api/v1/spam/categories` | 🔓 | Каталог категорий спама |
 | `GET` | `/api/v1/tags` | 🔓 | Каталог популярных тегов |
+
+**Нормализация телефона.** Принимаются `+7…`, `8…`, `00…`, скобки, пробелы,
+дефисы, точки, слэши и full-width цифры. Явный `+` или `00` отключает российские
+эвристики, поэтому `+47…`, `+81…` и другие международные номера не переписываются.
+BOM и zero-width символы вырезаются, результат всегда `+<8..15 цифр>`.
 
 ### Search & Admin
 
@@ -285,9 +300,14 @@ sequenceDiagram
 | `GET` | `/api/v1/admin/stats` | 👑 | Сводная статистика |
 | `GET` | `/api/v1/admin/users` | 👑 | Пользователи с пагинацией |
 | `GET` | `/api/v1/admin/users/{id}` | 👑 | Пользователь по ID |
+| `GET` | `/api/v1/admin/users/{id}/summary` | 👑 | Профиль + активность + аудит |
 | `PATCH` | `/api/v1/admin/users/{id}/block` | 👑 | Блокировка/разблокировка |
 | `DELETE` | `/api/v1/admin/users/{id}` | 👑 | Удалить пользователя |
 | `GET` | `/api/v1/admin/reports` | 👑 | Очередь спам-репортов |
+| `DELETE` | `/api/v1/admin/reports/{reportID}` | 👑 | Модерация репорта |
+| `GET` | `/api/v1/admin/numbers/{phone}` | 👑 | Полное досье номера (аудит) |
+| `PATCH` | `/api/v1/admin/numbers/{phone}` | 👑 | Редактировать профиль номера |
+| `GET` | `/api/v1/admin/audit` | 👑 | Лента audit-событий |
 
 ### Примеры
 
@@ -321,8 +341,10 @@ erDiagram
     users ||--o{ refresh_tokens : has
     users ||--o{ spam_reports : writes
     users ||--o{ tags : creates
+    users ||--o{ number_names : votes
     numbers ||--o{ tags : labeled
     numbers ||--o{ spam_reports : reported
+    numbers ||--o{ number_names : named
 
     users {
         uuid id PK
@@ -350,6 +372,12 @@ erDiagram
         varchar tag
         int weight
     }
+    number_names {
+        uuid id PK
+        varchar phone FK
+        uuid submitted_by FK
+        varchar name
+    }
     spam_reports {
         uuid id PK
         varchar phone FK
@@ -371,6 +399,7 @@ erDiagram
 | `contacts` | `(owner_id, created_at DESC)`, `(owner_id, lower(name))`, `(owner_id)` partial favorite, GIN trgm по `name`, unique `(owner_id, phone)` |
 | `numbers` | `(spam_score DESC, reports_count DESC)`, `lookups_count DESC`, GIN trgm по `name` |
 | `tags` | unique `(phone, tag)`, `(phone, weight DESC)`, `tag`, `created_by` partial |
+| `number_names` | unique `(phone, submitted_by)` partial, `(phone, name)`, `(phone, created_at DESC)` |
 | `spam_reports` | `(phone, created_at DESC)`, `created_at DESC`, `reporter_id`, unique `(phone, reporter_id)` |
 | `refresh_tokens` | unique `token_hash`, `(user_id)` и `(expires_at)` partial `revoked_at IS NULL` |
 | `audit_events` | PK event id, `(event_type, consumed_at DESC)`, `aggregate_id` |
@@ -380,7 +409,9 @@ erDiagram
 - **Spam score** пересчитывается детерминированно: `reports × 12 + risky tag weight × 3`
   (вклад тегов ограничен 40), итог ограничен 100.
 - **Один репорт на пользователя и номер** защищает рейтинг от накрутки.
-- **Кэш номера** в Redis на 60 секунд; инвалидация при теге/репорте.
+- **Один голос за имя на пользователя и номер**: повторная отправка заменяет
+  вариант, а отображаемое имя пересчитывается по самому популярному.
+- **Кэш номера** в Redis на 60 секунд; инвалидация при теге/репорте/имени.
 - **Lookup count** обновляется атомарным `UPDATE ... + 1` (без read-modify-write).
 - **Bulk import** — один `pgx.Batch` на 500 строк вместо 500 round-trip.
 - **pgx pool** — 20–25 соединений, health check 30s, ограничение времени жизни.
@@ -402,12 +433,15 @@ erDiagram
 | Auth | `getcontact_auth_attempts_total{operation,result}` |
 | Runtime | `go_*`, `process_*`, `getcontact_build_info` |
 
-Grafana-дашборд **GetContact — API & Platform Overview** (15 панелей) провижинится
-автоматически: RPS, 5xx, p50/p95/p99, in-flight, cache hit ratio, lookups, DB latency,
-Kafka events, спам-репорты, теги, heap, goroutines.
+Grafana-дашборд **GetContact — API & Platform Overview** (16 панелей) провижинится
+автоматически: RPS, 5xx, p97, p50/p95/p97/p99, in-flight, cache hit ratio, lookups,
+DB latency, Kafka events, спам-репорты, теги, heap, goroutines и p97 по каждому route.
 
-Алерты: API/worker down, 5xx > 5%, p95 > 1s, cache hit < 50%, Kafka publish errors,
-DB p95 > 500ms, отсутствие трафика, всплеск репортов.
+Алерты: API/worker down, 5xx > 5%, p97 > 1s, route p97 > 2s, cache hit < 50%,
+Kafka publish errors, DB p97 > 500ms, отсутствие трафика, всплеск репортов.
+Основной latency-SLO — **p97 < 300 ms**; p95 остаётся на графике для контекста.
+Recording rules лежат в `deploy/docker/prometheus/rules.yml` и в Kubernetes
+`PrometheusRule`.
 
 Подробнее: [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
 
@@ -424,7 +458,12 @@ DB p95 > 500ms, отсутствие трафика, всплеск репорт
 - `contact.created`
 - `number.looked_up`
 - `number.tag_added`
+- `number.name_added`
+- `number.name_removed`
 - `number.spam_reported`
+- `number.spam_deleted`
+- `admin.number_viewed`
+- `admin.number_updated`
 
 Событие — JSON-конверт с `id`, `type`, `version`, `occurred_at`, `aggregate_id`, `payload`.
 Worker пишет его в `audit_events` c `ON CONFLICT (id) DO NOTHING` (идемпотентность),
@@ -457,8 +496,10 @@ go test ./test/integration -v
 Интеграционный тест проходит полный сценарий: register → login → profile → CRUD контактов →
 import → lookup → tag → spam → duplicate spam 409 → search → refresh rotation →
 повторный refresh 401 → logout → me 401 → admin login → stats → block → blocked login 403 →
-unblock → смена пароля → старый пароль 401 → удаление аккаунта, плюс проверка
-`/metrics`, `/openapi.yaml` и статики Swagger UI.
+unblock → смена пароля → старый пароль 401 → удаление аккаунта. Дополнительно проверяются
+пакетный lookup, community-имена, spam summary/categories, trending, личная статистика,
+админское досье и редактирование номера, audit-лента, user summary и удаление репорта,
+а также `/metrics`, `/openapi.yaml` и статика Swagger UI.
 
 ---
 
@@ -558,7 +599,7 @@ make k8s-apply      # kubectl apply -k deploy/k8s
 | [docs/EVENTS.md](docs/EVENTS.md) | Kafka-контракты, идемпотентность, DLQ |
 | [deploy/k8s/README.md](deploy/k8s/README.md) | Пошаговый Kubernetes-деплой |
 | [api/openapi.yaml](api/openapi.yaml) | Машиночитаемая спецификация |
-| [api/postman_collection.json](api/postman_collection.json) | 40+ готовых запросов |
+| [api/postman_collection.json](api/postman_collection.json) | 50+ готовых запросов |
 
 ---
 

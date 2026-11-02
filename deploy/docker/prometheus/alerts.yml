@@ -36,9 +36,9 @@ groups:
           summary: "High 5xx error ratio"
           description: "More than 5% of API requests have failed for 5 minutes."
 
-      - alert: GetContactHighLatencyP95
+      - alert: GetContactHighLatencyP97
         expr: |
-          histogram_quantile(0.95,
+          histogram_quantile(0.97,
             sum by (le) (rate(getcontact_http_request_duration_seconds_bucket[5m]))
           ) > 1
         for: 5m
@@ -46,8 +46,21 @@ groups:
           severity: warning
           component: api
         annotations:
-          summary: "API p95 latency above 1s"
-          description: "p95 HTTP latency has exceeded 1 second for 5 minutes."
+          summary: "API p97 latency above 1s"
+          description: "97th percentile HTTP latency has exceeded 1 second for 5 minutes."
+
+      - alert: GetContactRouteLatencyP97High
+        expr: |
+          histogram_quantile(0.97,
+            sum by (le, route) (rate(getcontact_http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Route {{ $labels.route }} p97 latency above 2s"
+          description: "A single route has had a p97 above 2 seconds for 10 minutes; inspect its database queries and cache hit rate."
 
       - alert: GetContactNoTraffic
         expr: sum(rate(getcontact_http_requests_total[10m])) == 0
@@ -88,7 +101,7 @@ groups:
 
       - alert: GetContactDBLatencyHigh
         expr: |
-          histogram_quantile(0.95,
+          histogram_quantile(0.97,
             sum by (le) (rate(getcontact_db_query_duration_seconds_bucket[5m]))
           ) > 0.5
         for: 5m
@@ -96,8 +109,8 @@ groups:
           severity: warning
           component: postgres
         annotations:
-          summary: "Database p95 query latency above 500ms"
-          description: "Repository calls are slow; inspect indexes and connection pool saturation."
+          summary: "Database p97 query latency above 500ms"
+          description: "97th percentile repository call latency is slow; inspect indexes and connection pool saturation."
 
       - alert: GetContactSpamReportSurge
         expr: increase(getcontact_business_spam_reports_total[10m]) > 500
