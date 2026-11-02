@@ -457,7 +457,8 @@ go test ./test/integration -v
 Интеграционный тест проходит полный сценарий: register → login → profile → CRUD контактов →
 import → lookup → tag → spam → duplicate spam 409 → search → refresh rotation →
 повторный refresh 401 → logout → me 401 → admin login → stats → block → blocked login 403 →
-unblock, плюс проверка `/metrics` и `/openapi.yaml`.
+unblock → смена пароля → старый пароль 401 → удаление аккаунта, плюс проверка
+`/metrics`, `/openapi.yaml` и статики Swagger UI.
 
 ---
 
