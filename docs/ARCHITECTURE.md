@@ -203,6 +203,17 @@ sequenceDiagram
     C->>A: POST /auth/logout {refresh}
     A->>P: revoke refresh
     A->>R: SET auth:deny:{jti} TTL=exp-now
+    A->>R: SET auth:sid:deny:{sid} TTL=access-ttl
+    A-->>C: 204
+
+    C->>A: GET /auth/sessions
+    A->>P: SELECT active refresh_tokens (device metadata)
+    A-->>C: 200 sessions
+
+    C->>A: DELETE /auth/sessions/{sid}
+    A->>P: UPDATE revoked_at WHERE id AND user_id
+    A->>R: SET auth:sid:deny:{sid}
+    A-)K: user.session_revoked
     A-->>C: 204
 ```
 
@@ -210,11 +221,16 @@ sequenceDiagram
 
 - **Пароль**: argon2id, параметры по умолчанию 64 MiB / 3 итерации / 2 потока,
   PHC-строка `$argon2id$v=19$m=65536,t=3,p=2$...`. Проверка — constant-time.
-- **Access JWT**: HS256, claims `sub`, `role`, `iss`, `iat`, `exp`, `jti`.
-  TTL 15 минут. При каждом запросе проверяется подпись, срок и Redis denylist.
+- **Access JWT**: HS256, claims `sub`, `role`, `iss`, `iat`, `exp`, `jti`, `sid`.
+  TTL 15 минут. При каждом запросе проверяется подпись, срок, JWT denylist и
+  session denylist (если `sid` отозван).
 - **Refresh**: 32 случайных байта (base64url), в БД только SHA-256. Одноразовый:
   при ротации старый помечается `revoked_at`, повторное использование → 401.
-- **Logout**: access JTI попадает в Redis с TTL до истечения токена; refresh отзывается.
+- **Сессии**: одна запись `refresh_tokens` = одно устройство. При login/refresh
+  сохраняются только явно переданные клиентом поля (`X-Device-*`, `X-OS-*`,
+  `X-App-*`, `device` в JSON), IP из proxy-aware разбора и User-Agent.
+- **Logout**: access JTI и `sid` попадают в Redis с TTL до истечения токена;
+  refresh отзывается.
 - **Блокировка**: `SetBlocked` + `RevokeAllForUser`; middleware отклоняет заблокированных
   с `403 USER_BLOCKED`, логин тоже возвращает 403.
 - **Смена пароля**: проверяет текущий пароль, обновляет хэш и отзывает все refresh.
@@ -353,6 +369,20 @@ erDiagram
         char token_hash UK
         varchar user_agent
         inet ip
+        varchar device_id
+        varchar device_name
+        varchar device_model
+        varchar manufacturer
+        varchar os
+        varchar os_version
+        varchar app_version
+        varchar app_build
+        varchar client
+        varchar locale
+        varchar timezone
+        varchar network_type
+        varchar last_ip
+        timestamptz last_seen_at
         timestamptz expires_at
         timestamptz revoked_at
         timestamptz created_at
@@ -405,6 +435,7 @@ erDiagram
 | `number_names` | `(phone, name)` | агрегация вариантов |
 | `refresh_tokens` | `UNIQUE(token_hash)` | ротация |
 | `refresh_tokens` | `(user_id) WHERE revoked_at IS NULL` | отзыв сессий |
+| `refresh_tokens` | `(user_id, last_seen_at DESC) WHERE revoked_at IS NULL` | список сессий и админ-сводка |
 | `refresh_tokens` | `(expires_at) WHERE revoked_at IS NULL` | очистка |
 | `audit_events` | `(event_type, consumed_at DESC)` | аудит |
 | `audit_events` | `(aggregate_id)` | история агрегата |
@@ -479,6 +510,7 @@ flowchart LR
 | Caller-ID кэш | `number:{phone}` | 60 с | идём в Postgres |
 | Rate limit | `rl:{bucket}:{ip}:{window}` | окно | fail-open |
 | JWT denylist | `auth:deny:{jti}` | до `exp` | запрос отклоняется (fail-closed) |
+| Session denylist | `auth:sid:deny:{sid}` | access TTL | запрос отклоняется (fail-closed) |
 | Readiness | — | — | 503, если Postgres/Redis/Kafka недоступны |
 
 Почему denylist fail-closed: при недоступном Redis нельзя гарантировать, что

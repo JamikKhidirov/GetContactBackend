@@ -280,6 +280,43 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/v1/auth/sessions:
+    get:
+      tags: [Auth, Sessions]
+      summary: Активные сессии (устройства) пользователя
+      description: |
+        Возвращает только сессии владельца токена. Поля устройства и сети
+        заполняются из необязательных заголовков `X-Device-*`, `X-OS-*`,
+        `X-App-*`, `X-Client`, `X-Locale`, `X-Timezone`, `X-Network-Type` или
+        из необязательного объекта `device` в теле register/login/refresh.
+        API никогда не читает контакты, фото, файлы или сообщения с телефона.
+      responses:
+        '200':
+          description: Список сессий, новые сверху
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataSessions'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/sessions/{sessionID}:
+    delete:
+      tags: [Auth, Sessions]
+      summary: Завершить свою сессию
+      description: |
+        Отзывает refresh-сессию и немедленно блокирует связанные access-токены
+        через Redis denylist. Чужую сессию завершить нельзя.
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '204':
+          description: Сессия завершена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/users/{id}:
     get:
       tags: [Users]
@@ -1040,6 +1077,29 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/admin/users/{id}/sessions:
+    get:
+      tags: [Admin, Sessions]
+      summary: Сессии пользователя (только для администратора)
+      description: |
+        Активные устройства любого пользователя: IP, User-Agent, модель,
+        ОС, версия приложения и время последней активности. Только чтение.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Сессии пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataAdminSessions'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1054,6 +1114,14 @@ components:
       in: path
       required: true
       description: UUID ресурса
+      schema:
+        type: string
+        format: uuid
+    SessionID:
+      name: sessionID
+      in: path
+      required: true
+      description: UUID сессии (id записи refresh-токена)
       schema:
         type: string
         format: uuid
@@ -1385,6 +1453,62 @@ components:
           type: string
           format: date-time
 
+    DeviceInfo:
+      type: object
+      description: |
+        Необязательный блок с согласия клиента. Эквивалент заголовков
+        `X-Device-*` / `X-OS-*` / `X-App-*`. Принимаются только явно
+        переданные значения; API не читает данные устройства.
+      properties:
+        id:
+          type: string
+          maxLength: 128
+          example: "8f3c2a7e-1b2d-4c5e-9f00-1234567890ab"
+        name:
+          type: string
+          maxLength: 128
+          example: "Pixel 9 Pro"
+        model:
+          type: string
+          maxLength: 128
+          example: "Pixel 9 Pro"
+        manufacturer:
+          type: string
+          maxLength: 128
+          example: "Google"
+        os:
+          type: string
+          maxLength: 64
+          example: "Android"
+        os_version:
+          type: string
+          maxLength: 64
+          example: "15"
+        app_version:
+          type: string
+          maxLength: 64
+          example: "1.2.3"
+        app_build:
+          type: string
+          maxLength: 64
+          example: "12345"
+        client:
+          type: string
+          maxLength: 32
+          example: "android"
+        locale:
+          type: string
+          maxLength: 32
+          example: "ru-RU"
+        timezone:
+          type: string
+          maxLength: 64
+          example: "Europe/Moscow"
+        network_type:
+          type: string
+          maxLength: 32
+          example: "wifi"
+
     RegisterRequest:
       type: object
       required: [phone, password, display_name]
@@ -1406,6 +1530,8 @@ components:
           type: string
           format: email
           maxLength: 254
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
 
     LoginRequest:
       type: object
@@ -1416,6 +1542,8 @@ components:
         password:
           type: string
           format: password
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
 
     RefreshRequest:
       type: object
@@ -1423,6 +1551,8 @@ components:
       properties:
         refresh_token:
           type: string
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
 
     LogoutRequest:
       type: object
@@ -1430,6 +1560,57 @@ components:
         refresh_token:
           type: string
           description: Опционально; access token отзывается всегда.
+
+    Session:
+      type: object
+      description: Безопасная проекция refresh-сессии без хэша токена.
+      properties:
+        id:
+          type: string
+          format: uuid
+        current:
+          type: boolean
+          description: true для сессии, из которой сделан текущий запрос.
+        ip:
+          type: string
+          description: IP при входе (учитывает X-Forwarded-For / X-Real-IP).
+        last_ip:
+          type: string
+        user_agent:
+          type: string
+        device_id:
+          type: string
+        device_name:
+          type: string
+        device_model:
+          type: string
+        manufacturer:
+          type: string
+        os:
+          type: string
+        os_version:
+          type: string
+        app_version:
+          type: string
+        app_build:
+          type: string
+        client:
+          type: string
+        locale:
+          type: string
+        timezone:
+          type: string
+        network_type:
+          type: string
+        last_seen_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
 
     ChangePasswordRequest:
       type: object
@@ -1835,6 +2016,10 @@ components:
           $ref: '#/components/schemas/User'
         stats:
           $ref: '#/components/schemas/UserStats'
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
         recent_audit:
           type: array
           items:
@@ -2049,6 +2234,33 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/UserSummary'
+    DataSessions:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            sessions:
+              type: array
+              items:
+                $ref: '#/components/schemas/Session'
+            total:
+              type: integer
+    DataAdminSessions:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            user_id:
+              type: string
+              format: uuid
+            sessions:
+              type: array
+              items:
+                $ref: '#/components/schemas/Session'
+            total:
+              type: integer
     DataImportResult:
       type: object
       properties:

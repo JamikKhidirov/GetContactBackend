@@ -82,16 +82,57 @@ type SpamReport struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// RefreshToken is a persisted, rotated refresh-token session.
+// RefreshToken is a persisted, rotated refresh-token session. The device and
+// network fields are optional metadata supplied by the client at login; they
+// are never required and are treated as untrusted display strings.
 type RefreshToken struct {
-	ID        uuid.UUID  `json:"id"`
-	UserID    uuid.UUID  `json:"user_id"`
-	TokenHash string     `json:"-"`
-	UserAgent string     `json:"user_agent,omitempty"`
-	IP        string     `json:"ip,omitempty"`
-	ExpiresAt time.Time  `json:"expires_at"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID           uuid.UUID  `json:"id"`
+	UserID       uuid.UUID  `json:"user_id"`
+	TokenHash    string     `json:"-"`
+	UserAgent    string     `json:"user_agent,omitempty"`
+	IP           string     `json:"ip,omitempty"`
+	DeviceID     string     `json:"device_id,omitempty"`
+	DeviceName   string     `json:"device_name,omitempty"`
+	DeviceModel  string     `json:"device_model,omitempty"`
+	Manufacturer string     `json:"manufacturer,omitempty"`
+	OS           string     `json:"os,omitempty"`
+	OSVersion    string     `json:"os_version,omitempty"`
+	AppVersion   string     `json:"app_version,omitempty"`
+	AppBuild     string     `json:"app_build,omitempty"`
+	Client       string     `json:"client,omitempty"`
+	Locale       string     `json:"locale,omitempty"`
+	Timezone     string     `json:"timezone,omitempty"`
+	NetworkType  string     `json:"network_type,omitempty"`
+	LastIP       string     `json:"last_ip,omitempty"`
+	LastSeenAt   time.Time  `json:"last_seen_at"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
+// Session is the safe, client-facing projection of a RefreshToken. It never
+// contains the token hash or any server-side secret.
+type Session struct {
+	ID           uuid.UUID `json:"id"`
+	Current      bool      `json:"current"`
+	IP           string    `json:"ip,omitempty"`
+	LastIP       string    `json:"last_ip,omitempty"`
+	UserAgent    string    `json:"user_agent,omitempty"`
+	DeviceID     string    `json:"device_id,omitempty"`
+	DeviceName   string    `json:"device_name,omitempty"`
+	DeviceModel  string    `json:"device_model,omitempty"`
+	Manufacturer string    `json:"manufacturer,omitempty"`
+	OS           string    `json:"os,omitempty"`
+	OSVersion    string    `json:"os_version,omitempty"`
+	AppVersion   string    `json:"app_version,omitempty"`
+	AppBuild     string    `json:"app_build,omitempty"`
+	Client       string    `json:"client,omitempty"`
+	Locale       string    `json:"locale,omitempty"`
+	Timezone     string    `json:"timezone,omitempty"`
+	NetworkType  string    `json:"network_type,omitempty"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+	CreatedAt    time.Time `json:"created_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 // TokenPair is returned after a successful authentication or rotation.
@@ -126,6 +167,8 @@ const (
 	EventSpamReportDeleted  = "number.spam_deleted"
 	EventAdminNumberViewed  = "admin.number_viewed"
 	EventAdminNumberUpdated = "admin.number_updated"
+	EventUserLoggedIn       = "user.logged_in"
+	EventUserSessionRevoked = "user.session_revoked"
 )
 
 // NumberName is a community-submitted name for a phone number. Each user has

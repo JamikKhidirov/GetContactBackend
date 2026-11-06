@@ -31,7 +31,7 @@
 
 ```bash
 export REGISTRY=ghcr.io/your-org
-export TAG=1.0.0
+export TAG=1.1.0
 
 docker build -f deploy/docker/Dockerfile --target api    -t $REGISTRY/getcontact-api:$TAG    .
 docker build -f deploy/docker/Dockerfile --target worker -t $REGISTRY/getcontact-worker:$TAG .
@@ -44,8 +44,8 @@ docker push $REGISTRY/getcontact-worker:$TAG
 
 ```bash
 # Linux
-sed -i "s#ghcr.io/your-org/getcontact-api:1.0.0#$REGISTRY/getcontact-api:$TAG#" deploy/k8s/05-api.yaml
-sed -i "s#ghcr.io/your-org/getcontact-worker:1.0.0#$REGISTRY/getcontact-worker:$TAG#" deploy/k8s/06-worker.yaml
+sed -i "s#ghcr.io/your-org/getcontact-api:1.1.0#$REGISTRY/getcontact-api:$TAG#" deploy/k8s/05-api.yaml
+sed -i "s#ghcr.io/your-org/getcontact-worker:1.1.0#$REGISTRY/getcontact-worker:$TAG#" deploy/k8s/06-worker.yaml
 ```
 
 Или используйте kustomize `images:`:
@@ -54,10 +54,10 @@ sed -i "s#ghcr.io/your-org/getcontact-worker:1.0.0#$REGISTRY/getcontact-worker:$
 images:
   - name: ghcr.io/your-org/getcontact-api
     newName: ghcr.io/your-org/getcontact-api
-    newTag: 1.0.0
+    newTag: 1.1.0
   - name: ghcr.io/your-org/getcontact-worker
     newName: ghcr.io/your-org/getcontact-worker
-    newTag: 1.0.0
+    newTag: 1.1.0
 ```
 
 Для приватного registry:

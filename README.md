@@ -210,12 +210,29 @@ sequenceDiagram
 ```
 
 - **Пароли** — argon2id (64 MiB, t=3, p=2), PHC-формат.
-- **Access JWT** — HS256, 15 минут, `sub` + `role` + `jti`.
+- **Access JWT** — HS256, 15 минут, `sub` + `role` + `jti` + `sid` (id сессии).
 - **Refresh** — 32 случайных байта, в БД только SHA-256, ротация при каждом refresh.
-- **Logout** — refresh отзывается, access JTI попадает в Redis blacklist до истечения.
+- **Logout** — refresh отзывается, access JTI и `sid` попадают в Redis blacklist до истечения.
 - **Блокировка** — отзывает все refresh-сессии пользователя.
 - **Rate limit** — Redis fixed window: auth 20/мин, public/user 120/мин на IP.
   При недоступности Redis лимитер **fail-open**, чтобы кэш не ронял API.
+
+### Метаданные устройства и сессии
+
+Клиент **по желанию** передаёт контекст устройства при register/login/refresh —
+заголовками или объектом `device` в JSON. API сохраняет только явно отправленные
+поля и никогда не читает контакты, галерею, файлы или сообщения с телефона.
+
+| Источник | Поля |
+|---|---|
+| Заголовки | `X-Device-Id`, `X-Device-Name`, `X-Device-Model`, `X-Device-Manufacturer`, `X-OS`, `X-OS-Version`, `X-App-Version`, `X-App-Build`, `X-Client`, `X-Locale`, `X-Timezone`, `X-Network-Type` |
+| JSON `device` | `id`, `name`, `model`, `manufacturer`, `os`, `os_version`, `app_version`, `app_build`, `client`, `locale`, `timezone`, `network_type` |
+| Автоматически | IP (с учётом `X-Forwarded-For` / `X-Real-IP`), `User-Agent`, время входа и последней активности |
+
+Пользователь видит свои активные сессии и может завершить любую из них
+(`GET/DELETE /api/v1/auth/sessions`). Администратор видит сессии любого
+пользователя в `/api/v1/admin/users/{id}/summary` и `/sessions`.
+Завершение сессии мгновенно инвалидирует её access-токены через Redis.
 
 ---
 
@@ -246,6 +263,8 @@ sequenceDiagram
 | `POST` | `/api/v1/auth/refresh` | 🔓 | Ротация refresh-токена |
 | `POST` | `/api/v1/auth/logout` | 🔑 | Отзыв refresh + blacklist access |
 | `GET` | `/api/v1/auth/me` | 🔑 | Текущий профиль |
+| `GET` | `/api/v1/auth/sessions` | 🔑 | Свои активные сессии и устройства |
+| `DELETE` | `/api/v1/auth/sessions/{sessionID}` | 🔑 | Завершить свою сессию |
 
 ### Users
 
@@ -300,7 +319,8 @@ BOM и zero-width символы вырезаются, результат все
 | `GET` | `/api/v1/admin/stats` | 👑 | Сводная статистика |
 | `GET` | `/api/v1/admin/users` | 👑 | Пользователи с пагинацией |
 | `GET` | `/api/v1/admin/users/{id}` | 👑 | Пользователь по ID |
-| `GET` | `/api/v1/admin/users/{id}/summary` | 👑 | Профиль + активность + аудит |
+| `GET` | `/api/v1/admin/users/{id}/summary` | 👑 | Профиль + активность + сессии + аудит |
+| `GET` | `/api/v1/admin/users/{id}/sessions` | 👑 | Активные устройства пользователя |
 | `PATCH` | `/api/v1/admin/users/{id}/block` | 👑 | Блокировка/разблокировка |
 | `DELETE` | `/api/v1/admin/users/{id}` | 👑 | Удалить пользователя |
 | `GET` | `/api/v1/admin/reports` | 👑 | Очередь спам-репортов |

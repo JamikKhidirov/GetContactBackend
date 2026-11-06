@@ -100,3 +100,28 @@ type AdminNumberUpdated struct {
 	Carrier string    `json:"carrier,omitempty"`
 	Country string    `json:"country,omitempty"`
 }
+
+// UserLoggedIn captures consent-based client context (IP, device and app
+// version) for the security audit trail. It never contains contacts, media or
+// any other data read from the device.
+type UserLoggedIn struct {
+	UserID       uuid.UUID `json:"user_id"`
+	SessionID    uuid.UUID `json:"session_id"`
+	IP           string    `json:"ip,omitempty"`
+	UserAgent    string    `json:"user_agent,omitempty"`
+	DeviceID     string    `json:"device_id,omitempty"`
+	DeviceName   string    `json:"device_name,omitempty"`
+	DeviceModel  string    `json:"device_model,omitempty"`
+	Manufacturer string    `json:"manufacturer,omitempty"`
+	OS           string    `json:"os,omitempty"`
+	OSVersion    string    `json:"os_version,omitempty"`
+	AppVersion   string    `json:"app_version,omitempty"`
+	Client       string    `json:"client,omitempty"`
+}
+
+// UserSessionRevoked is emitted when a user or admin ends a device session.
+type UserSessionRevoked struct {
+	UserID    uuid.UUID `json:"user_id"`
+	SessionID uuid.UUID `json:"session_id"`
+	ActorID   uuid.UUID `json:"actor_id"`
+}

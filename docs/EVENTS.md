@@ -104,6 +104,42 @@ kafka-topics.sh --bootstrap-server kafka:9092 \
 }
 ```
 
+### `user.logged_in`
+
+Публикуется после успешного входа. `aggregate_id` = user UUID. Содержит только
+контекст, который клиент явно передал, плюс IP и User-Agent запроса; никаких
+контактов, фото, файлов или сообщений.
+
+```json
+{
+  "user_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44",
+  "session_id": "3f6b1c2a-7d4e-4a9b-8c1d-2e3f4a5b6c7d",
+  "ip": "203.0.113.7",
+  "user_agent": "GetContact/1.2.3 (Android 15; Pixel 9 Pro)",
+  "device_id": "8f3c2a7e-1b2d-4c5e-9f00-1234567890ab",
+  "device_name": "Pixel 9 Pro",
+  "device_model": "Pixel 9 Pro",
+  "manufacturer": "Google",
+  "os": "Android",
+  "os_version": "15",
+  "app_version": "1.2.3",
+  "client": "android"
+}
+```
+
+### `user.session_revoked`
+
+Публикуется, когда пользователь завершает одну из своих сессий.
+`aggregate_id` = user UUID.
+
+```json
+{
+  "user_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44",
+  "session_id": "3f6b1c2a-7d4e-4a9b-8c1d-2e3f4a5b6c7d",
+  "actor_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44"
+}
+```
+
 ### `contact.created`
 
 Публикуется после создания контакта и после bulk-import (на каждый контакт).
@@ -218,6 +254,8 @@ kafka-topics.sh --bootstrap-server kafka:9092 \
 | Тип | Aggregate | Когда |
 |---|---|---|
 | `user.registered` | user UUID | регистрация |
+| `user.logged_in` | user UUID | успешный вход (IP/устройство) |
+| `user.session_revoked` | user UUID | завершение сессии |
 | `user.blocked` | user UUID | block/unblock |
 | `contact.created` | contact UUID | create/import |
 | `number.looked_up` | phone | каждый lookup |
@@ -343,9 +381,11 @@ docker exec -it gc-postgres psql -U getcontact -d getcontact \
   -c "select event_type, count(*) from audit_events group by 1 order by 2 desc;"
 ```
 
-Ожидаемо после e2e-теста: `user.registered`, `contact.created`,
-`number.looked_up`, `number.tag_added`, `number.name_added`, `number.name_removed`,
-`number.spam_reported`, `number.spam_deleted`, `admin.number_viewed`, `admin.number_updated`.
+Ожидаемо после e2e-теста: `user.registered`, `user.logged_in`,
+`user.session_revoked`, `contact.created`, `number.looked_up`,
+`number.tag_added`, `number.name_added`, `number.name_removed`,
+`number.spam_reported`, `number.spam_deleted`, `admin.number_viewed`,
+`admin.number_updated`.
 
 ---
 

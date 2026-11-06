@@ -28,6 +28,24 @@ variables = [
     ("adminPassword", "Admin12345"),
     ("tagName", "telemarketing"),
     ("searchQuery", "Ivan"),
+    ("sessionId", ""),
+]
+
+# device_headers demonstrates the optional consent-based metadata. Every header
+# is optional; a client may send none of them.
+device_headers = [
+    ("X-Device-Id", "postman-device-1"),
+    ("X-Device-Name", "Pixel 9 Pro"),
+    ("X-Device-Model", "Pixel 9 Pro"),
+    ("X-Device-Manufacturer", "Google"),
+    ("X-OS", "Android"),
+    ("X-OS-Version", "15"),
+    ("X-App-Version", "1.2.3"),
+    ("X-App-Build", "12345"),
+    ("X-Client", "android"),
+    ("X-Locale", "ru-RU"),
+    ("X-Timezone", "Europe/Moscow"),
+    ("X-Network-Type", "wifi"),
 ]
 
 
@@ -55,7 +73,7 @@ def auth_block(kind):
     return {"type": "bearer", "bearer": [{"key": "token", "value": token, "type": "string"}]}
 
 
-def make_request(name, method, path, *, body=None, query=None, auth="user", tests=None, description=None):
+def make_request(name, method, path, *, body=None, query=None, auth="user", tests=None, description=None, headers=None):
     raw = "{{baseUrl}}" + path
     if query:
         raw += "?" + "&".join(f"{k}={v}" for k, v in query)
@@ -83,6 +101,8 @@ def make_request(name, method, path, *, body=None, query=None, auth="user", test
             "raw": json.dumps(body, ensure_ascii=False, indent=2),
             "options": {"raw": {"language": "json"}},
         }
+    for key, value in headers or []:
+        item["request"]["header"].append({"key": key, "value": value})
     if tests:
         item["event"] = [{"listen": "test", "script": {"type": "text/javascript", "exec": tests}}]
     return item
@@ -158,8 +178,31 @@ collection = {
                     "POST",
                     "/api/v1/auth/login",
                     auth="none",
-                    body={"phone": "{{phone}}", "password": "{{userPassword}}"},
+                    body={
+                        "phone": "{{phone}}",
+                        "password": "{{userPassword}}",
+                        "device": {
+                            "id": "postman-device-1",
+                            "name": "Pixel 9 Pro",
+                            "model": "Pixel 9 Pro",
+                            "manufacturer": "Google",
+                            "os": "Android",
+                            "os_version": "15",
+                            "app_version": "1.2.3",
+                            "app_build": "12345",
+                            "client": "android",
+                            "locale": "ru-RU",
+                            "timezone": "Europe/Moscow",
+                            "network_type": "wifi",
+                        },
+                    },
+                    headers=device_headers,
                     tests=save_tokens(),
+                    description=(
+                        "Метаданные устройства необязательны. Их можно передать заголовками "
+                        "X-Device-*/X-OS-*/X-App-* или объектом device. API сохраняет только "
+                        "явно отправленные значения и IP запроса."
+                    ),
                 ),
                 make_request(
                     "Refresh tokens",
@@ -178,6 +221,35 @@ collection = {
                     description="Refresh одноразовый: повторный вызов со старым токеном вернёт 401.",
                 ),
                 make_request("Me", "GET", "/api/v1/auth/me"),
+                make_request(
+                    "List sessions",
+                    "GET",
+                    "/api/v1/auth/sessions",
+                    tests=[
+                        "const json = pm.response.json();",
+                        "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                        "const sessions = (json.data && json.data.sessions) || [];",
+                        "const other = sessions.find(s => !s.current);",
+                        "if (other) { pm.collectionVariables.set('sessionId', other.id); }",
+                    ],
+                    description=(
+                        "Активные устройства пользователя: IP, модель, ОС, версия приложения, "
+                        "время последней активности. current=true — текущая сессия."
+                    ),
+                ),
+                make_request(
+                    "Revoke session",
+                    "DELETE",
+                    "/api/v1/auth/sessions/{{sessionId}}",
+                    tests=[
+                        "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                        "pm.collectionVariables.set('sessionId', '');",
+                    ],
+                    description=(
+                        "Завершает выбранную сессию ({{sessionId}} заполняется из List sessions — "
+                        "это другая сессия, не текущая). Связанные access-токены блокируются сразу."
+                    ),
+                ),
                 make_request(
                     "Logout",
                     "POST",
@@ -387,7 +459,14 @@ collection = {
                     "GET",
                     "/api/v1/admin/users/{{userId}}/summary",
                     auth="admin",
-                    description="Профиль, счётчики активности и последние audit-события.",
+                    description="Профиль, счётчики активности, активные сессии и последние audit-события.",
+                ),
+                make_request(
+                    "User sessions",
+                    "GET",
+                    "/api/v1/admin/users/{{userId}}/sessions",
+                    auth="admin",
+                    description="Активные устройства пользователя: IP, модель, ОС и версия приложения.",
                 ),
                 make_request(
                     "Spam report queue",

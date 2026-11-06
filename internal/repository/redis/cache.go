@@ -161,4 +161,23 @@ func (c *Cache) IsAccessTokenDenied(ctx context.Context, jti string) bool {
 	return err == nil && n > 0
 }
 
+// DenySession invalidates every access token bound to a revoked refresh session.
+func (c *Cache) DenySession(ctx context.Context, sessionID string, ttl time.Duration) error {
+	if ttl <= 0 || sessionID == "" {
+		return nil
+	}
+	return c.client.Set(ctx, denySessionKey(sessionID), "1", ttl).Err()
+}
+
+// IsSessionDenied reports whether the session was explicitly revoked.
+func (c *Cache) IsSessionDenied(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	n, err := c.client.Exists(ctx, denySessionKey(sessionID)).Result()
+	return err == nil && n > 0
+}
+
 func denyKey(jti string) string { return "auth:deny:" + jti }
+
+func denySessionKey(sessionID string) string { return "auth:sid:deny:" + sessionID }

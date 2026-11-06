@@ -77,6 +77,8 @@ type TokenRepository interface {
 	GetByHash(ctx context.Context, hash string) (*RefreshToken, error)
 	Revoke(ctx context.Context, id uuid.UUID) error
 	RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
+	RevokeForUser(ctx context.Context, id, userID uuid.UUID) error
+	ListActiveForUser(ctx context.Context, userID uuid.UUID) ([]RefreshToken, error)
 	CountActiveForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
 }

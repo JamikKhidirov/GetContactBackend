@@ -147,6 +147,21 @@ func (a *API) adminUserSummary(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, summary)
 }
 
+// adminUserSessions exposes the device sessions of any user to administrators.
+func (a *API) adminUserSessions(w http.ResponseWriter, r *http.Request) {
+	id, err := pathUUID(r, "id")
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	sessions, err := a.admin.UserSessions(r.Context(), id)
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{"user_id": id, "sessions": sessions, "total": len(sessions)})
+}
+
 func (a *API) adminDeleteReport(w http.ResponseWriter, r *http.Request) {
 	actor, _ := userIDFrom(r.Context())
 	id, err := pathUUID(r, "reportID")

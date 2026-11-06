@@ -203,6 +203,107 @@ curl -s http://localhost:8080/api/v1/auth/me -H "Authorization: Bearer $ACCESS"
 
 `200` — профиль; `401` — токен невалиден/отозван; `403` — заблокирован.
 
+### `GET /api/v1/auth/sessions` 🔑
+
+Активные сессии (устройства) текущего пользователя, новые сверху. Поле
+`current: true` отмечает сессию, из которой сделан запрос.
+
+```bash
+curl -s http://localhost:8080/api/v1/auth/sessions \
+  -H "Authorization: Bearer $ACCESS"
+```
+
+```json
+{
+  "data": {
+    "sessions": [
+      {
+        "id": "3f6b1c2a-7d4e-4a9b-8c1d-2e3f4a5b6c7d",
+        "current": true,
+        "ip": "203.0.113.7",
+        "last_ip": "203.0.113.7",
+        "user_agent": "GetContact/1.2.3 (Android 15; Pixel 9 Pro)",
+        "device_id": "8f3c2a7e-1b2d-4c5e-9f00-1234567890ab",
+        "device_name": "Pixel 9 Pro",
+        "device_model": "Pixel 9 Pro",
+        "manufacturer": "Google",
+        "os": "Android",
+        "os_version": "15",
+        "app_version": "1.2.3",
+        "app_build": "12345",
+        "client": "android",
+        "locale": "ru-RU",
+        "timezone": "Europe/Moscow",
+        "network_type": "wifi",
+        "last_seen_at": "2026-01-01T10:00:00Z",
+        "created_at": "2026-01-01T10:00:00Z",
+        "expires_at": "2026-01-31T10:00:00Z"
+      }
+    ],
+    "total": 1
+  }
+}
+```
+
+### `DELETE /api/v1/auth/sessions/{sessionID}` 🔑
+
+Завершает свою сессию: отзывает refresh и немедленно блокирует связанные
+access-токены через Redis. Чужая или несуществующая сессия → `404`.
+
+```bash
+curl -s -X DELETE http://localhost:8080/api/v1/auth/sessions/$SESSION_ID \
+  -H "Authorization: Bearer $ACCESS"
+```
+
+`204 No Content`.
+
+### Метаданные устройства (по согласию клиента)
+
+При register/login/refresh можно передать необязательный контекст устройства —
+заголовками или объектом `device`. API сохраняет только эти явные значения плюс
+IP и `User-Agent` запроса; он не читает контакты, галерею, файлы и сообщения.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -H 'X-Device-Id: 8f3c2a7e-1b2d-4c5e-9f00-1234567890ab' \
+  -H 'X-Device-Name: Pixel 9 Pro' \
+  -H 'X-OS: Android' \
+  -H 'X-OS-Version: 15' \
+  -H 'X-App-Version: 1.2.3' \
+  -H 'X-Client: android' \
+  -H 'X-Locale: ru-RU' \
+  -H 'X-Timezone: Europe/Moscow' \
+  -H 'X-Network-Type: wifi' \
+  -d '{"phone":"+79991234567","password":"Passw0rd123"}'
+```
+
+Эквивалент в теле:
+
+```json
+{
+  "phone": "+79991234567",
+  "password": "Passw0rd123",
+  "device": {
+    "id": "8f3c2a7e-1b2d-4c5e-9f00-1234567890ab",
+    "name": "Pixel 9 Pro",
+    "model": "Pixel 9 Pro",
+    "manufacturer": "Google",
+    "os": "Android",
+    "os_version": "15",
+    "app_version": "1.2.3",
+    "app_build": "12345",
+    "client": "android",
+    "locale": "ru-RU",
+    "timezone": "Europe/Moscow",
+    "network_type": "wifi"
+  }
+}
+```
+
+IP берётся из `X-Forwarded-For` (первый валидный адрес) или `X-Real-IP`, затем
+из `RemoteAddr`. Значения обрезаются до безопасной длины.
+
 ---
 
 ## Users
@@ -623,8 +724,14 @@ Query: `event_type`, `aggregate_id`, `page`, `per_page` (1..100). Фильтры
 ### `GET /api/v1/admin/users/{id}/summary`
 
 Профиль пользователя, счётчики активности (`contacts`, `tags_added`,
-`spam_reports`, `names_submitted`, `active_sessions`) и последние
+`spam_reports`, `names_submitted`, `active_sessions`), список активных сессий
+(`sessions` с IP, устройством, ОС и версией приложения) и последние
 audit-события по его `user_id`.
+
+### `GET /api/v1/admin/users/{id}/sessions` 👑
+
+Только чтение: активные сессии любого пользователя в том же формате, что и
+`GET /api/v1/auth/sessions` (без флага `current`).
 
 ---
 

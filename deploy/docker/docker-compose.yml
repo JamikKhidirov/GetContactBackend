@@ -116,7 +116,7 @@ services:
       dockerfile: deploy/docker/Dockerfile
       target: api
       args:
-        VERSION: 1.0.0
+        VERSION: 1.1.0
     container_name: gc-api
     depends_on:
       postgres:
@@ -142,7 +142,7 @@ services:
       dockerfile: deploy/docker/Dockerfile
       target: worker
       args:
-        VERSION: 1.0.0
+        VERSION: 1.1.0
     container_name: gc-worker
     depends_on:
       postgres:

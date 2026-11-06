@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "16bcb310-271f-4b69-b08b-e8529f264f64",
+    "_postman_id": "7a0ae632-b6c5-4597-8050-358532596a6b",
     "name": "GetContact API",
     "description": "Полная коллекция GetContact API.\n\n1. Запустите `docker compose -f deploy/docker/docker-compose.yml up -d --build`.\n2. Выберите окружение `GetContact Local`.\n3. Выполните **Auth → Register** (или Login) — токены сохранятся автоматически.\n4. Остальные запросы используют `{{accessToken}}`.\n\nAdmin-запросы используют `{{adminAccessToken}}` (Admin → Login).\nПапка **99 Destructive** удаляет данные — запускайте осознанно.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -111,6 +111,11 @@
     {
       "key": "searchQuery",
       "value": "Ivan",
+      "type": "string"
+    },
+    {
+      "key": "sessionId",
+      "value": "",
       "type": "string"
     }
   ],
@@ -362,6 +367,54 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Device-Id",
+                "value": "postman-device-1"
+              },
+              {
+                "key": "X-Device-Name",
+                "value": "Pixel 9 Pro"
+              },
+              {
+                "key": "X-Device-Model",
+                "value": "Pixel 9 Pro"
+              },
+              {
+                "key": "X-Device-Manufacturer",
+                "value": "Google"
+              },
+              {
+                "key": "X-OS",
+                "value": "Android"
+              },
+              {
+                "key": "X-OS-Version",
+                "value": "15"
+              },
+              {
+                "key": "X-App-Version",
+                "value": "1.2.3"
+              },
+              {
+                "key": "X-App-Build",
+                "value": "12345"
+              },
+              {
+                "key": "X-Client",
+                "value": "android"
+              },
+              {
+                "key": "X-Locale",
+                "value": "ru-RU"
+              },
+              {
+                "key": "X-Timezone",
+                "value": "Europe/Moscow"
+              },
+              {
+                "key": "X-Network-Type",
+                "value": "wifi"
               }
             ],
             "url": {
@@ -379,10 +432,10 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "",
+            "description": "Метаданные устройства необязательны. Их можно передать заголовками X-Device-*/X-OS-*/X-App-* или объектом device. API сохраняет только явно отправленные значения и IP запроса.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"password\": \"{{userPassword}}\"\n}",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"password\": \"{{userPassword}}\",\n  \"device\": {\n    \"id\": \"postman-device-1\",\n    \"name\": \"Pixel 9 Pro\",\n    \"model\": \"Pixel 9 Pro\",\n    \"manufacturer\": \"Google\",\n    \"os\": \"Android\",\n    \"os_version\": \"15\",\n    \"app_version\": \"1.2.3\",\n    \"app_build\": \"12345\",\n    \"client\": \"android\",\n    \"locale\": \"ru-RU\",\n    \"timezone\": \"Europe/Moscow\",\n    \"network_type\": \"wifi\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -493,6 +546,104 @@
             },
             "description": ""
           }
+        },
+        {
+          "name": "List sessions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Активные устройства пользователя: IP, модель, ОС, версия приложения, время последней активности. current=true — текущая сессия."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const sessions = (json.data && json.data.sessions) || [];",
+                  "const other = sessions.find(s => !s.current);",
+                  "if (other) { pm.collectionVariables.set('sessionId', other.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke session",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/sessions/{{sessionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "{{sessionId}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Завершает выбранную сессию ({{sessionId}} заполняется из List sessions — это другая сессия, не текущая). Связанные access-токены блокируются сразу."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.collectionVariables.set('sessionId', '');"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Logout",
@@ -1952,7 +2103,44 @@
                 }
               ]
             },
-            "description": "Профиль, счётчики активности и последние audit-события."
+            "description": "Профиль, счётчики активности, активные сессии и последние audit-события."
+          }
+        },
+        {
+          "name": "User sessions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users/{{userId}}/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "users",
+                "{{userId}}",
+                "sessions"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Активные устройства пользователя: IP, модель, ОС и версия приложения."
           }
         },
         {

@@ -33,7 +33,11 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 			writeError(w, r, a.log, apperr.Unauthorized("access token has been revoked"))
 			return
 		}
-		ctx := withClaims(r.Context(), claims.UserID(), roleFromClaims(claims.Role), claims.ID, claims.ExpiresAt.Time)
+		if a.cache.IsSessionDenied(r.Context(), claims.SessionID) {
+			writeError(w, r, a.log, apperr.Unauthorized("session has been revoked"))
+			return
+		}
+		ctx := withClaims(r.Context(), claims.UserID(), roleFromClaims(claims.Role), claims.ID, claims.SessionID, claims.ExpiresAt.Time)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -48,11 +52,11 @@ func (a *API) optionalAuth(next http.Handler) http.Handler {
 			return
 		}
 		claims, err := a.tokens.Parse(raw)
-		if err != nil || a.cache.IsAccessTokenDenied(r.Context(), claims.ID) {
+		if err != nil || a.cache.IsAccessTokenDenied(r.Context(), claims.ID) || a.cache.IsSessionDenied(r.Context(), claims.SessionID) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ctx := withClaims(r.Context(), claims.UserID(), roleFromClaims(claims.Role), claims.ID, claims.ExpiresAt.Time)
+		ctx := withClaims(r.Context(), claims.UserID(), roleFromClaims(claims.Role), claims.ID, claims.SessionID, claims.ExpiresAt.Time)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -246,12 +250,39 @@ func (a *API) requestTimeout(next http.Handler) http.Handler {
 	})
 }
 
+// clientIP returns the caller IP, honouring the standard proxy headers used by
+// the Docker/Kubernetes ingress so rate limiting and session metadata see the
+// real mobile client instead of the proxy address.
 func clientIP(r *http.Request) string {
+	if ip := firstForwardedIP(r.Header.Get("X-Forwarded-For")); ip != "" {
+		return ip
+	}
+	if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(ip) != nil {
+		return ip
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// firstForwardedIP parses the left-most valid address of an X-Forwarded-For
+// chain. Invalid or spoofed non-IP values are ignored.
+func firstForwardedIP(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		ip := strings.TrimSpace(part)
+		if ip == "" {
+			continue
+		}
+		if host, _, err := net.SplitHostPort(ip); err == nil {
+			ip = host
+		}
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
+	}
+	return ""
 }
 
 func userIDString(ctx context.Context) string {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/getcontact/backend/internal/apperr"
@@ -17,10 +18,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// Meta is request metadata captured for refresh-token sessions.
+// Meta is the consent-based request context captured for refresh sessions.
+// Device fields are optional: a client may send only User-Agent, or nothing at
+// all. The API never reads photos, contacts, files or messages from a device.
 type Meta struct {
-	IP        string
-	UserAgent string
+	IP           string
+	UserAgent    string
+	DeviceID     string
+	DeviceName   string
+	DeviceModel  string
+	Manufacturer string
+	OS           string
+	OSVersion    string
+	AppVersion   string
+	AppBuild     string
+	Client       string
+	Locale       string
+	Timezone     string
+	NetworkType  string
 }
 
 // AuthResult is returned by register/login/refresh.
@@ -106,7 +121,7 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput, meta Meta)
 		return nil, apperr.Internal(err)
 	}
 
-	tokens, err := s.issuePair(ctx, user, meta)
+	tokens, _, err := s.issuePair(ctx, user, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +157,18 @@ func (s *AuthService) Login(ctx context.Context, phoneRaw, password string, meta
 		metrics.AuthAttempts.WithLabelValues("login", "blocked").Inc()
 		return nil, apperr.Forbidden("user is blocked")
 	}
-	tokens, err := s.issuePair(ctx, user, meta)
+	tokens, sessionID, err := s.issuePair(ctx, user, meta)
 	if err != nil {
 		return nil, err
 	}
 	metrics.AuthAttempts.WithLabelValues("login", "ok").Inc()
+	s.publish(ctx, events.NewEvent(domain.EventUserLoggedIn, user.ID.String(), events.UserLoggedIn{
+		UserID: user.ID, SessionID: sessionID,
+		IP: meta.IP, UserAgent: meta.UserAgent,
+		DeviceID: meta.DeviceID, DeviceName: meta.DeviceName, DeviceModel: meta.DeviceModel,
+		Manufacturer: meta.Manufacturer, OS: meta.OS, OSVersion: meta.OSVersion,
+		AppVersion: meta.AppVersion, Client: meta.Client,
+	}))
 	return &AuthResult{User: user.Public(), Tokens: *tokens}, nil
 }
 
@@ -174,7 +196,14 @@ func (s *AuthService) Refresh(ctx context.Context, rawToken string, meta Meta) (
 	if user.IsBlocked {
 		return nil, apperr.Forbidden("user is blocked")
 	}
-	tokens, err := s.issuePair(ctx, user, meta)
+	// Keep the device context stable across rotation when the client does not
+	// resend its headers; it belongs to the same physical session.
+	meta = mergeMeta(meta, stored)
+	// Invalidate any access token still tied to the rotated session.
+	if err := s.cache.DenySession(ctx, stored.ID.String(), s.tokensMgr.TTL()); err != nil {
+		s.log.Warn("session denylist failed", "error", err)
+	}
+	tokens, _, err := s.issuePair(ctx, user, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -182,11 +211,23 @@ func (s *AuthService) Refresh(ctx context.Context, rawToken string, meta Meta) (
 	return &AuthResult{User: user.Public(), Tokens: *tokens}, nil
 }
 
-// Logout revokes the refresh token (if supplied) and blacklists the access jti.
-func (s *AuthService) Logout(ctx context.Context, jti string, accessExpiresAt time.Time, refreshToken string) error {
+// Logout revokes the refresh token (if supplied) and blacklists the access jti
+// plus the bound session.
+func (s *AuthService) Logout(ctx context.Context, jti, sessionID string, accessExpiresAt time.Time, refreshToken string) error {
 	if refreshToken != "" {
 		if stored, err := s.tokens.GetByHash(ctx, platform.HashOpaqueToken(refreshToken)); err == nil {
 			_ = s.tokens.Revoke(ctx, stored.ID)
+			if err := s.cache.DenySession(ctx, stored.ID.String(), s.tokensMgr.TTL()); err != nil {
+				s.log.Warn("session denylist failed", "error", err)
+			}
+		}
+	}
+	if sessionID != "" {
+		if sid, err := uuid.Parse(sessionID); err == nil {
+			_ = s.tokens.Revoke(ctx, sid)
+		}
+		if err := s.cache.DenySession(ctx, sessionID, s.tokensMgr.TTL()); err != nil {
+			s.log.Warn("session denylist failed", "error", err)
 		}
 	}
 	if jti != "" {
@@ -249,27 +290,113 @@ func (s *AuthService) BootstrapAdmin(ctx context.Context, phoneRaw, password, na
 	})
 }
 
-func (s *AuthService) issuePair(ctx context.Context, user *domain.User, meta Meta) (*domain.TokenPair, error) {
-	access, jti, accessExp, err := s.tokensMgr.Issue(user.ID, user.Role)
-	if err != nil {
-		return nil, apperr.Internal(err)
-	}
-	_ = jti
+func (s *AuthService) issuePair(ctx context.Context, user *domain.User, meta Meta) (*domain.TokenPair, uuid.UUID, error) {
 	raw, hash, err := platform.NewOpaqueToken(32)
 	if err != nil {
-		return nil, apperr.Internal(err)
+		return nil, uuid.Nil, apperr.Internal(err)
 	}
-	refreshExp := time.Now().UTC().Add(s.refreshTTL)
+	now := time.Now().UTC()
+	refreshExp := now.Add(s.refreshTTL)
+	sessionID := uuid.New()
 	if err := s.tokens.Create(ctx, &domain.RefreshToken{
-		ID: uuid.New(), UserID: user.ID, TokenHash: hash,
-		UserAgent: truncate(meta.UserAgent, 256), IP: truncate(meta.IP, 64), ExpiresAt: refreshExp,
+		ID:           sessionID,
+		UserID:       user.ID,
+		TokenHash:    hash,
+		UserAgent:    truncate(meta.UserAgent, 256),
+		IP:           truncate(meta.IP, 64),
+		DeviceID:     truncate(meta.DeviceID, 128),
+		DeviceName:   truncate(meta.DeviceName, 128),
+		DeviceModel:  truncate(meta.DeviceModel, 128),
+		Manufacturer: truncate(meta.Manufacturer, 128),
+		OS:           truncate(meta.OS, 64),
+		OSVersion:    truncate(meta.OSVersion, 64),
+		AppVersion:   truncate(meta.AppVersion, 64),
+		AppBuild:     truncate(meta.AppBuild, 64),
+		Client:       truncate(meta.Client, 32),
+		Locale:       truncate(meta.Locale, 32),
+		Timezone:     truncate(meta.Timezone, 64),
+		NetworkType:  truncate(meta.NetworkType, 32),
+		LastIP:       truncate(meta.IP, 64),
+		LastSeenAt:   now,
+		ExpiresAt:    refreshExp,
 	}); err != nil {
-		return nil, apperr.Internal(err)
+		return nil, uuid.Nil, apperr.Internal(err)
+	}
+	access, _, accessExp, err := s.tokensMgr.IssueWithSession(user.ID, user.Role, sessionID)
+	if err != nil {
+		return nil, uuid.Nil, apperr.Internal(err)
 	}
 	return &domain.TokenPair{
 		AccessToken: access, RefreshToken: raw, TokenType: "Bearer",
 		ExpiresIn: int64(time.Until(accessExp).Seconds()), ExpiresAt: accessExp,
-	}, nil
+	}, sessionID, nil
+}
+
+// Sessions lists the caller's active device sessions, newest first. The current
+// access token's session is flagged so a client can show "this device".
+func (s *AuthService) Sessions(ctx context.Context, userID uuid.UUID, currentSessionID string) ([]domain.Session, error) {
+	active, err := s.tokens.ListActiveForUser(ctx, userID)
+	if err != nil {
+		return nil, apperr.Internal(err)
+	}
+	out := make([]domain.Session, 0, len(active))
+	for i := range active {
+		out = append(out, sessionView(active[i], currentSessionID))
+	}
+	return out, nil
+}
+
+// RevokeSession ends one of the caller's own sessions and immediately blocks
+// outstanding access tokens that were issued for it.
+func (s *AuthService) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID, currentSessionID string) error {
+	if sessionID == uuid.Nil {
+		return apperr.NotFound("session")
+	}
+	if err := s.tokens.RevokeForUser(ctx, sessionID, userID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return apperr.NotFound("session")
+		}
+		return apperr.Internal(err)
+	}
+	// Deny remaining access tokens for the revoked session until the access-token
+	// TTL has elapsed; after that the JWT expires on its own.
+	if err := s.cache.DenySession(ctx, sessionID.String(), s.tokensMgr.TTL()); err != nil {
+		s.log.Warn("session denylist failed", "error", err)
+	}
+	s.publish(ctx, events.NewEvent(domain.EventUserSessionRevoked, userID.String(), events.UserSessionRevoked{
+		UserID: userID, SessionID: sessionID, ActorID: userID,
+	}))
+	metrics.AuthAttempts.WithLabelValues("session_revoke", "ok").Inc()
+	return nil
+}
+
+func sessionView(t domain.RefreshToken, currentSessionID string) domain.Session {
+	lastSeen := t.LastSeenAt
+	if lastSeen.IsZero() {
+		lastSeen = t.CreatedAt
+	}
+	return domain.Session{
+		ID:           t.ID,
+		Current:      t.ID.String() == currentSessionID,
+		IP:           t.IP,
+		LastIP:       t.LastIP,
+		UserAgent:    t.UserAgent,
+		DeviceID:     t.DeviceID,
+		DeviceName:   t.DeviceName,
+		DeviceModel:  t.DeviceModel,
+		Manufacturer: t.Manufacturer,
+		OS:           t.OS,
+		OSVersion:    t.OSVersion,
+		AppVersion:   t.AppVersion,
+		AppBuild:     t.AppBuild,
+		Client:       t.Client,
+		Locale:       t.Locale,
+		Timezone:     t.Timezone,
+		NetworkType:  t.NetworkType,
+		LastSeenAt:   lastSeen,
+		CreatedAt:    t.CreatedAt,
+		ExpiresAt:    t.ExpiresAt,
+	}
 }
 
 func (s *AuthService) publish(ctx context.Context, ev domain.Event) {
@@ -281,8 +408,60 @@ func (s *AuthService) publish(ctx context.Context, ev domain.Event) {
 }
 
 func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
 	}
 	return s[:n]
+}
+
+// mergeMeta fills any missing device field from the previous session so a
+// token refresh does not erase the device context captured at login.
+func mergeMeta(meta Meta, prev *domain.RefreshToken) Meta {
+	if meta.IP == "" {
+		meta.IP = prev.LastIP
+		if meta.IP == "" {
+			meta.IP = prev.IP
+		}
+	}
+	if meta.UserAgent == "" {
+		meta.UserAgent = prev.UserAgent
+	}
+	if meta.DeviceID == "" {
+		meta.DeviceID = prev.DeviceID
+	}
+	if meta.DeviceName == "" {
+		meta.DeviceName = prev.DeviceName
+	}
+	if meta.DeviceModel == "" {
+		meta.DeviceModel = prev.DeviceModel
+	}
+	if meta.Manufacturer == "" {
+		meta.Manufacturer = prev.Manufacturer
+	}
+	if meta.OS == "" {
+		meta.OS = prev.OS
+	}
+	if meta.OSVersion == "" {
+		meta.OSVersion = prev.OSVersion
+	}
+	if meta.AppVersion == "" {
+		meta.AppVersion = prev.AppVersion
+	}
+	if meta.AppBuild == "" {
+		meta.AppBuild = prev.AppBuild
+	}
+	if meta.Client == "" {
+		meta.Client = prev.Client
+	}
+	if meta.Locale == "" {
+		meta.Locale = prev.Locale
+	}
+	if meta.Timezone == "" {
+		meta.Timezone = prev.Timezone
+	}
+	if meta.NetworkType == "" {
+		meta.NetworkType = prev.NetworkType
+	}
+	return meta
 }

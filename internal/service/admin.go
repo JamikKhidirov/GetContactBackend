@@ -53,6 +53,7 @@ type NumberDossier struct {
 type UserSummary struct {
 	User        domain.User         `json:"user"`
 	Stats       domain.UserStats    `json:"stats"`
+	Sessions    []domain.Session    `json:"sessions"`
 	RecentAudit []domain.AuditEvent `json:"recent_audit"`
 }
 
@@ -150,6 +151,7 @@ func (s *AdminService) UserSummary(ctx context.Context, id uuid.UUID) (*UserSumm
 	summary := &UserSummary{
 		User:        user.Public(),
 		Stats:       domain.UserStats{UserID: user.ID, MemberSince: user.CreatedAt},
+		Sessions:    make([]domain.Session, 0, 8),
 		RecentAudit: make([]domain.AuditEvent, 0, 10),
 	}
 	g, gctx := errgroup.WithContext(ctx)
@@ -175,6 +177,18 @@ func (s *AdminService) UserSummary(ctx context.Context, id uuid.UUID) (*UserSumm
 		summary.Stats.ActiveSessions, err = s.tokens.CountActiveForUser(gctx, id)
 		return err
 	})
+	g.Go(func() (err error) {
+		active, err := s.tokens.ListActiveForUser(gctx, id)
+		if err != nil {
+			return err
+		}
+		sessions := make([]domain.Session, 0, len(active))
+		for i := range active {
+			sessions = append(sessions, sessionView(active[i], ""))
+		}
+		summary.Sessions = sessions
+		return nil
+	})
 	if err := g.Wait(); err != nil {
 		return nil, apperr.Internal(err)
 	}
@@ -188,6 +202,26 @@ func (s *AdminService) UserSummary(ctx context.Context, id uuid.UUID) (*UserSumm
 		summary.RecentAudit = page.Items
 	}
 	return summary, nil
+}
+
+// UserSessions returns the active device sessions of any user. Admin-only and
+// read-only; the admin cannot revoke a user's session from this endpoint.
+func (s *AdminService) UserSessions(ctx context.Context, id uuid.UUID) ([]domain.Session, error) {
+	if _, err := s.users.GetByID(ctx, id); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, apperr.NotFound("user")
+		}
+		return nil, apperr.Internal(err)
+	}
+	active, err := s.tokens.ListActiveForUser(ctx, id)
+	if err != nil {
+		return nil, apperr.Internal(err)
+	}
+	out := make([]domain.Session, 0, len(active))
+	for i := range active {
+		out = append(out, sessionView(active[i], ""))
+	}
+	return out, nil
 }
 
 // DeleteReport removes a spam report, recomputes the number's score and clears

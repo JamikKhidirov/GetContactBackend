@@ -14,6 +14,9 @@ import (
 type Claims struct {
 	Role string `json:"role"`
 	Type string `json:"typ"`
+	// SessionID links the access token to its refresh session so a revoked
+	// device session can invalidate all of its outstanding access tokens.
+	SessionID string `json:"sid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -37,12 +40,23 @@ func (m *TokenManager) TTL() time.Duration { return m.ttl }
 
 // Issue creates a signed HS256 access token and returns it with the jti and expiry.
 func (m *TokenManager) Issue(userID uuid.UUID, role domain.Role) (token, jti string, expiresAt time.Time, err error) {
+	return m.IssueWithSession(userID, role, uuid.Nil)
+}
+
+// IssueWithSession creates an access token bound to a refresh session. Passing
+// uuid.Nil keeps the token valid without a session binding.
+func (m *TokenManager) IssueWithSession(userID uuid.UUID, role domain.Role, sessionID uuid.UUID) (token, jti string, expiresAt time.Time, err error) {
 	now := time.Now().UTC()
 	expiresAt = now.Add(m.ttl)
 	jti = uuid.NewString()
+	sid := ""
+	if sessionID != uuid.Nil {
+		sid = sessionID.String()
+	}
 	claims := Claims{
-		Role: string(role),
-		Type: "access",
+		Role:      string(role),
+		Type:      "access",
+		SessionID: sid,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   userID.String(),

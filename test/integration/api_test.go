@@ -31,6 +31,11 @@ func newClient(t *testing.T) *apiClient {
 
 func (c *apiClient) request(t *testing.T, method, path, token string, body any) (int, map[string]any) {
 	t.Helper()
+	return c.requestWithHeaders(t, method, path, token, body, nil)
+}
+
+func (c *apiClient) requestWithHeaders(t *testing.T, method, path, token string, body any, headers map[string]string) (int, map[string]any) {
+	t.Helper()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -48,6 +53,9 @@ func (c *apiClient) request(t *testing.T, method, path, token string, body any) 
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -326,6 +334,9 @@ func TestEndToEndUserJourney(t *testing.T) {
 	status, body = c.request(t, http.MethodGet, "/api/v1/admin/users/"+userID+"/summary", adminAccess, nil)
 	expect(t, "admin user summary", status, http.StatusOK, body)
 
+	status, body = c.request(t, http.MethodGet, "/api/v1/admin/users/"+userID+"/sessions", adminAccess, nil)
+	expect(t, "admin user sessions", status, http.StatusOK, body)
+
 	status, body = c.request(t, http.MethodGet, "/api/v1/admin/numbers/"+lookupPhone, adminAccess, nil)
 	expect(t, "admin number dossier", status, http.StatusOK, body)
 	dossier := data(t, body)
@@ -403,6 +414,116 @@ func TestEndToEndUserJourney(t *testing.T) {
 		"phone": phone, "password": newPassword,
 	})
 	expect(t, "login after deletion", status, http.StatusUnauthorized, body)
+}
+
+func TestDeviceSessionsAndMetadata(t *testing.T) {
+	c := newClient(t)
+	waitReady(t, c)
+
+	suffix := time.Now().UnixNano() % 10_000_000
+	phone := fmt.Sprintf("+7994%07d", suffix)
+	password := "Passw0rd123"
+
+	deviceHeaders := map[string]string{
+		"X-Device-Id":           "device-alpha",
+		"X-Device-Name":         "Pixel 9 Pro",
+		"X-Device-Model":        "Pixel 9 Pro",
+		"X-Device-Manufacturer": "Google",
+		"X-OS":                  "Android",
+		"X-OS-Version":          "15",
+		"X-App-Version":         "1.2.3",
+		"X-App-Build":           "12345",
+		"X-Client":              "android",
+		"X-Locale":              "ru-RU",
+		"X-Timezone":            "Europe/Moscow",
+		"X-Network-Type":        "wifi",
+		"X-Forwarded-For":       "203.0.113.7",
+	}
+
+	status, body := c.requestWithHeaders(t, http.MethodPost, "/api/v1/auth/register", "", map[string]any{
+		"phone": phone, "password": password, "display_name": "Session Tester",
+	}, deviceHeaders)
+	expect(t, "register with device", status, http.StatusCreated, body)
+	first := data(t, body)["tokens"].(map[string]any)
+	access1 := str(t, first, "access_token")
+
+	// The owning user sees the captured metadata and the current-session marker.
+	status, body = c.request(t, http.MethodGet, "/api/v1/auth/sessions", access1, nil)
+	expect(t, "list sessions", status, http.StatusOK, body)
+	sessions := data(t, body)["sessions"].([]any)
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d: %v", len(sessions), sessions)
+	}
+	session := sessions[0].(map[string]any)
+	if session["current"] != true {
+		t.Fatalf("expected current session, got %v", session)
+	}
+	if got := str(t, session, "device_id"); got != "device-alpha" {
+		t.Fatalf("device_id %q", got)
+	}
+	if got := str(t, session, "os"); got != "Android" {
+		t.Fatalf("os %q", got)
+	}
+	if got := str(t, session, "app_version"); got != "1.2.3" {
+		t.Fatalf("app_version %q", got)
+	}
+	if got := str(t, session, "ip"); got != "203.0.113.7" {
+		t.Fatalf("ip %q, want proxy-aware 203.0.113.7", got)
+	}
+
+	// A second login (another device) adds a session. This one also exercises
+	// the JSON device block instead of headers.
+	status, body = c.request(t, http.MethodPost, "/api/v1/auth/login", "", map[string]any{
+		"phone": phone, "password": password,
+		"device": map[string]any{
+			"id": "device-beta", "name": "iPhone 16", "model": "iPhone17,1",
+			"manufacturer": "Apple", "os": "iOS", "os_version": "18.2",
+			"app_version": "1.2.3", "client": "ios",
+		},
+	})
+	expect(t, "second login", status, http.StatusOK, body)
+	second := data(t, body)["tokens"].(map[string]any)
+	access2 := str(t, second, "access_token")
+	refresh2 := str(t, second, "refresh_token")
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/auth/sessions", access1, nil)
+	expect(t, "list sessions after login", status, http.StatusOK, body)
+	sessions = data(t, body)["sessions"].([]any)
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	var betaID string
+	for _, item := range sessions {
+		m := item.(map[string]any)
+		if m["device_id"] == "device-beta" {
+			betaID = str(t, m, "id")
+			if m["current"] != false {
+				t.Fatalf("beta session must not be current: %v", m)
+			}
+		}
+	}
+	if betaID == "" {
+		t.Fatal("device-beta session not listed")
+	}
+
+	// Revoking the second session immediately invalidates its access token.
+	status, body = c.request(t, http.MethodDelete, "/api/v1/auth/sessions/"+betaID, access1, nil)
+	expect(t, "revoke session", status, http.StatusNoContent, body)
+
+	status, body = c.request(t, http.MethodGet, "/api/v1/auth/me", access2, nil)
+	expect(t, "revoked session access token", status, http.StatusUnauthorized, body)
+
+	// The revoked refresh token can no longer be rotated.
+	status, body = c.request(t, http.MethodPost, "/api/v1/auth/refresh", "", map[string]any{"refresh_token": refresh2})
+	expect(t, "revoked session refresh", status, http.StatusUnauthorized, body)
+
+	// The original session still works.
+	status, body = c.request(t, http.MethodGet, "/api/v1/auth/me", access1, nil)
+	expect(t, "surviving session", status, http.StatusOK, body)
+
+	// Unknown session ids are rejected without leaking existence.
+	status, body = c.request(t, http.MethodDelete, "/api/v1/auth/sessions/00000000-0000-4000-8000-000000000000", access1, nil)
+	expect(t, "revoke unknown session", status, http.StatusNotFound, body)
 }
 
 func TestMetricsAndDocs(t *testing.T) {

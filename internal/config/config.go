@@ -138,7 +138,7 @@ func Load() (*Config, error) {
 		CORS: CORSConfig{
 			AllowedOrigins: split(env("CORS_ALLOWED_ORIGINS", "*")),
 			AllowedMethods: split(env("CORS_ALLOWED_METHODS", "GET,POST,PATCH,PUT,DELETE,OPTIONS")),
-			AllowedHeaders: split(env("CORS_ALLOWED_HEADERS", "Accept,Authorization,Content-Type,X-Request-Id")),
+			AllowedHeaders: split(env("CORS_ALLOWED_HEADERS", "Accept,Authorization,Content-Type,X-Request-Id,X-Device-Id,X-Device-Name,X-Device-Model,X-Device-Manufacturer,X-OS,X-OS-Version,X-App-Version,X-App-Build,X-Client,X-Locale,X-Timezone,X-Network-Type,X-Forwarded-For,X-Real-IP")),
 		},
 		Rate: RateConfig{
 			Enabled:   envBool("RATE_LIMIT_ENABLED", true),

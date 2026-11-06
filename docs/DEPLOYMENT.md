@@ -133,10 +133,10 @@ Compose использует два listener'а:
 
 ```bash
 # 1. Образы
-docker build -f deploy/docker/Dockerfile --target api    -t ghcr.io/your-org/getcontact-api:1.0.0    .
-docker build -f deploy/docker/Dockerfile --target worker -t ghcr.io/your-org/getcontact-worker:1.0.0 .
-docker push ghcr.io/your-org/getcontact-api:1.0.0
-docker push ghcr.io/your-org/getcontact-worker:1.0.0
+docker build -f deploy/docker/Dockerfile --target api    -t ghcr.io/your-org/getcontact-api:1.1.0    .
+docker build -f deploy/docker/Dockerfile --target worker -t ghcr.io/your-org/getcontact-worker:1.1.0 .
+docker push ghcr.io/your-org/getcontact-api:1.1.0
+docker push ghcr.io/your-org/getcontact-worker:1.1.0
 
 # 2. Namespace + секреты
 kubectl apply -f deploy/k8s/00-namespace.yaml
@@ -184,8 +184,8 @@ kubectl -n getcontact port-forward svc/api 8080:80
 В манифестах стоит placeholder:
 
 ```text
-ghcr.io/your-org/getcontact-api:1.0.0
-ghcr.io/your-org/getcontact-worker:1.0.0
+ghcr.io/your-org/getcontact-api:1.1.0
+ghcr.io/your-org/getcontact-worker:1.1.0
 ```
 
 Замените на свой registry. Для приватного registry добавьте `imagePullSecrets`:

@@ -121,6 +121,8 @@ func New(d Deps) http.Handler {
 
 			r.Post("/auth/logout", a.logout)
 			r.Get("/auth/me", a.me)
+			r.Get("/auth/sessions", a.listSessions)
+			r.Delete("/auth/sessions/{sessionID}", a.revokeSession)
 
 			r.Get("/users/me/stats", a.personalStats)
 			r.Get("/users/{id}", a.getUser)
@@ -151,6 +153,7 @@ func New(d Deps) http.Handler {
 				r.Get("/users", a.adminListUsers)
 				r.Get("/users/{id}", a.adminGetUser)
 				r.Get("/users/{id}/summary", a.adminUserSummary)
+				r.Get("/users/{id}/sessions", a.adminUserSessions)
 				r.Patch("/users/{id}/block", a.adminSetBlocked)
 				r.Delete("/users/{id}", a.adminDeleteUser)
 				r.Get("/reports", a.adminListReports)

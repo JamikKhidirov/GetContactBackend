@@ -30,6 +30,22 @@ func TestTokenIssueAndParse(t *testing.T) {
 	if claims.UserID() != uid || claims.Role != string(domain.RoleAdmin) || claims.ID != jti {
 		t.Fatalf("claims mismatch: %+v", claims)
 	}
+	if claims.SessionID != "" {
+		t.Fatalf("legacy Issue must not bind a session, got %q", claims.SessionID)
+	}
+
+	sessionID := uuid.New()
+	bound, _, _, err := tm.IssueWithSession(uid, domain.RoleUser, sessionID)
+	if err != nil {
+		t.Fatalf("issue with session: %v", err)
+	}
+	boundClaims, err := tm.Parse(bound)
+	if err != nil {
+		t.Fatalf("parse session token: %v", err)
+	}
+	if boundClaims.SessionID != sessionID.String() {
+		t.Fatalf("session id %q, want %q", boundClaims.SessionID, sessionID.String())
+	}
 
 	other, _ := platform.NewTokenManager("ffffffffffffffffffffffffffffffff", "test-issuer", time.Minute)
 	if _, err := other.Parse(token); err == nil {
