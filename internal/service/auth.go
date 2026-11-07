@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/getcontact/backend/internal/apperr"
 	"github.com/getcontact/backend/internal/domain"
@@ -409,10 +410,24 @@ func (s *AuthService) publish(ctx context.Context, ev domain.Event) {
 
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	if s == "" {
+		return ""
+	}
+	// Drop control characters so header/body values cannot inject line breaks
+	// into logs or audit payloads.
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	// Count runes, not bytes: PostgreSQL VARCHAR(n) counts characters and a
+	// byte-slice could split a multi-byte UTF-8 sequence.
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n]
+	runes := []rune(s)
+	return string(runes[:n])
 }
 
 // mergeMeta fills any missing device field from the previous session so a

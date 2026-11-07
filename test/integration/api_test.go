@@ -11,8 +11,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type apiClient struct {
@@ -426,7 +428,7 @@ func TestDeviceSessionsAndMetadata(t *testing.T) {
 
 	deviceHeaders := map[string]string{
 		"X-Device-Id":           "device-alpha",
-		"X-Device-Name":         "Pixel 9 Pro",
+		"X-Device-Name":         strings.Repeat("Устройство", 20),
 		"X-Device-Model":        "Pixel 9 Pro",
 		"X-Device-Manufacturer": "Google",
 		"X-OS":                  "Android",
@@ -469,6 +471,11 @@ func TestDeviceSessionsAndMetadata(t *testing.T) {
 	}
 	if got := str(t, session, "ip"); got != "203.0.113.7" {
 		t.Fatalf("ip %q, want proxy-aware 203.0.113.7", got)
+	}
+	// Long non-ASCII metadata is truncated by runes, not bytes, so it stays
+	// valid UTF-8 and fits the VARCHAR(128) column.
+	if name := str(t, session, "device_name"); utf8.RuneCountInString(name) != 128 {
+		t.Fatalf("device_name rune length %d, want 128", utf8.RuneCountInString(name))
 	}
 
 	// A second login (another device) adds a session. This one also exercises
