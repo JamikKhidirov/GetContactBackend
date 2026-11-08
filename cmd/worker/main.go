@@ -21,6 +21,7 @@ import (
 	"github.com/getcontact/backend/internal/platform"
 	"github.com/getcontact/backend/internal/repository/postgres"
 	rediscache "github.com/getcontact/backend/internal/repository/redis"
+	"github.com/getcontact/backend/internal/service"
 	"github.com/getcontact/backend/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -75,6 +76,19 @@ func run() error {
 
 	eventRepo := postgres.NewEventRepo(pool)
 	numberRepo := postgres.NewNumberRepo(pool)
+	emailRepo := postgres.NewEmailRepo(pool)
+
+	mailer, err := platform.NewMailer(platform.MailerOptions{
+		Provider: cfg.Email.Provider, FromName: cfg.Email.FromName,
+		FromAddress: cfg.Email.FromAddress, ReplyTo: cfg.Email.ReplyTo,
+		Host: cfg.Email.SMTPHost, Port: cfg.Email.SMTPPort,
+		Username: cfg.Email.SMTPUsername, Password: cfg.Email.SMTPPassword,
+		TLS: cfg.Email.SMTPTLS, Timeout: cfg.Email.SMTPTimeout,
+	}, log)
+	if err != nil {
+		return err
+	}
+	delivery := service.NewEmailDeliveryService(cfg.Email, emailRepo, mailer, log)
 
 	consumer, err := events.NewConsumer(cfg.Kafka, publisher, log)
 	if err != nil {
@@ -83,7 +97,7 @@ func run() error {
 	defer consumer.Close()
 
 	handler := func(ctx context.Context, ev domain.Event) error {
-		return handleEvent(ctx, log, cfg.Kafka.Topic, eventRepo, numberRepo, cache, ev)
+		return handleEvent(ctx, log, cfg.Kafka.Topic, eventRepo, numberRepo, cache, delivery, ev)
 	}
 
 	consumerErr := make(chan error, 1)
@@ -123,8 +137,25 @@ func handleEvent(
 	eventRepo domain.EventRepository,
 	numberRepo domain.NumberRepository,
 	cache *rediscache.Cache,
+	delivery *service.EmailDeliveryService,
 	ev domain.Event,
 ) error {
+	// Email delivery runs before the idempotency insert. If the worker crashes
+	// after sending but before recording the event, the event is redelivered;
+	// the delivered_at marker then prevents a duplicate and the insert retries.
+	// The reverse order could swallow an email that was never sent.
+	if ev.Type == domain.EventEmailCodeRequested {
+		var payload events.EmailCodeRequested
+		if err := decodePayload(ev.Payload, &payload); err != nil {
+			return err
+		}
+		if err := delivery.DeliverCode(ctx, payload.VerificationID); err != nil {
+			return fmt.Errorf("deliver email code: %w", err)
+		}
+		_, err := eventRepo.Insert(ctx, topic, ev)
+		return err
+	}
+
 	inserted, err := eventRepo.Insert(ctx, topic, ev)
 	if err != nil {
 		return fmt.Errorf("persist event: %w", err)
@@ -161,6 +192,32 @@ func handleEvent(
 			return err
 		}
 		log.Info("welcome flow triggered", "user_id", payload.UserID)
+	case domain.EventEmailDelivered:
+		var payload events.EmailDelivered
+		if err := decodePayload(ev.Payload, &payload); err != nil {
+			return err
+		}
+		log.Info("email delivery receipt recorded",
+			"verification_id", payload.VerificationID, "provider", payload.Provider)
+	case domain.EventEmailFailed:
+		var payload events.EmailDeliveryFailed
+		if err := decodePayload(ev.Payload, &payload); err != nil {
+			return err
+		}
+		log.Warn("email delivery failure recorded",
+			"verification_id", payload.VerificationID, "provider", payload.Provider, "reason", payload.Error)
+	case domain.EventUserEmailVerified:
+		var payload events.UserEmailVerified
+		if err := decodePayload(ev.Payload, &payload); err != nil {
+			return err
+		}
+		log.Info("email ownership verified", "user_id", payload.UserID, "email", platform.MaskEmail(payload.Email))
+	case domain.EventUserEmailLogin:
+		var payload events.UserEmailLogin
+		if err := decodePayload(ev.Payload, &payload); err != nil {
+			return err
+		}
+		log.Info("passwordless email login", "user_id", payload.UserID, "session_id", payload.SessionID)
 	}
 	return nil
 }

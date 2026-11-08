@@ -29,6 +29,9 @@ variables = [
     ("tagName", "telemarketing"),
     ("searchQuery", "Ivan"),
     ("sessionId", ""),
+    ("testEmail", "dzamikhidirov8@gmail.com"),
+    ("emailCode", ""),
+    ("emailAccessToken", ""),
 ]
 
 # device_headers demonstrates the optional consent-based metadata. Every header
@@ -203,6 +206,94 @@ collection = {
                         "X-Device-*/X-OS-*/X-App-* или объектом device. API сохраняет только "
                         "явно отправленные значения и IP запроса."
                     ),
+                ),
+                make_request(
+                    "Email: request signup code",
+                    "POST",
+                    "/api/v1/auth/email/code",
+                    auth="none",
+                    body={"email": "{{testEmail}}", "purpose": "signup"},
+                    tests=[
+                        "const json = pm.response.json();",
+                        "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                        "if (json.data && json.data.dev_code) {",
+                        "  pm.collectionVariables.set('emailCode', json.data.dev_code);",
+                        "}",
+                    ],
+                    description=(
+                        "Ставит код и событие доставки в transactional outbox одной транзакцией. "
+                        "В development с EMAIL_PROVIDER=log ответ содержит dev_code."
+                    ),
+                ),
+                make_request(
+                    "Email: register with code",
+                    "POST",
+                    "/api/v1/auth/register",
+                    auth="none",
+                    body={
+                        "phone": "{{phone}}",
+                        "password": "{{userPassword}}",
+                        "display_name": "Email User",
+                        "email": "{{testEmail}}",
+                        "email_code": "{{emailCode}}",
+                    },
+                    tests=save_tokens(),
+                    description=(
+                        "Создаёт пользователя с уже подтверждённым адресом. Используйте уникальный "
+                        "plus-адрес (name+tag@example.com), если аккаунт с этим email уже существует."
+                    ),
+                ),
+                make_request(
+                    "Email: request login code",
+                    "POST",
+                    "/api/v1/auth/email/code",
+                    auth="none",
+                    body={"email": "{{testEmail}}", "purpose": "login"},
+                    tests=[
+                        "const json = pm.response.json();",
+                        "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                        "if (json.data && json.data.dev_code) {",
+                        "  pm.collectionVariables.set('emailCode', json.data.dev_code);",
+                        "}",
+                    ],
+                    description="Ответ не раскрывает, существует ли аккаунт с таким адресом.",
+                ),
+                make_request(
+                    "Email: login with code",
+                    "POST",
+                    "/api/v1/auth/email/login",
+                    auth="none",
+                    body={"email": "{{testEmail}}", "code": "{{emailCode}}"},
+                    tests=save_tokens(),
+                    description="Код одноразовый: повторная попытка вернёт 401.",
+                ),
+                make_request(
+                    "Email: request verify code",
+                    "POST",
+                    "/api/v1/auth/email/verify",
+                    body={"email": "{{testEmail}}"},
+                    tests=[
+                        "const json = pm.response.json();",
+                        "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                        "if (json.data && json.data.dev_code) {",
+                        "  pm.collectionVariables.set('emailCode', json.data.dev_code);",
+                        "}",
+                    ],
+                    description="Требует Bearer-токен. Если email не передан, берётся адрес профиля.",
+                ),
+                make_request(
+                    "Email: confirm verify",
+                    "POST",
+                    "/api/v1/auth/email/verify/confirm",
+                    body={"email": "{{testEmail}}", "code": "{{emailCode}}"},
+                    tests=[
+                        "const json = pm.response.json();",
+                        "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                        "if (json.data && json.data.email_verified) {",
+                        "  pm.test('email is verified', () => pm.expect(json.data.email_verified).to.eql(true));",
+                        "}",
+                    ],
+                    description="Проверяет код и привязывает адрес к текущему аккаунту.",
                 ),
                 make_request(
                     "Refresh tokens",

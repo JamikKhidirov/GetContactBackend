@@ -17,12 +17,13 @@ type UserRepo struct{ db *pgxpool.Pool }
 // NewUserRepo builds a user repository.
 func NewUserRepo(db *pgxpool.Pool) *UserRepo { return &UserRepo{db: db} }
 
-const userColumns = `id, phone, COALESCE(email, ''), password_hash, display_name, role, is_blocked, created_at, updated_at`
+const userColumns = `id, phone, COALESCE(email, ''), email_verified, email_verified_at, password_hash, display_name, role, is_blocked, created_at, updated_at`
 
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
 	var role string
-	if err := row.Scan(&u.ID, &u.Phone, &u.Email, &u.PasswordHash, &u.DisplayName, &role, &u.IsBlocked, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Phone, &u.Email, &u.EmailVerified, &u.EmailVerifiedAt,
+		&u.PasswordHash, &u.DisplayName, &role, &u.IsBlocked, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -35,10 +36,11 @@ func scanUser(row pgx.Row) (*domain.User, error) {
 // Create inserts a user, mapping unique violations to domain.ErrConflict.
 func (r *UserRepo) Create(ctx context.Context, u *domain.User) error {
 	defer observe("users.create", time.Now())
-	err := r.db.QueryRow(ctx, `INSERT INTO users (id, phone, email, password_hash, display_name, role, is_blocked)
-		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7)
+	err := r.db.QueryRow(ctx, `INSERT INTO users
+			(id, phone, email, email_verified, email_verified_at, password_hash, display_name, role, is_blocked)
+		VALUES ($1, $2, NULLIF($3, ''), $4, CASE WHEN $4 THEN NOW() ELSE NULL END, $5, $6, $7, $8)
 		RETURNING created_at, updated_at`,
-		u.ID, u.Phone, u.Email, u.PasswordHash, u.DisplayName, string(u.Role), u.IsBlocked,
+		u.ID, u.Phone, u.Email, u.EmailVerified, u.PasswordHash, u.DisplayName, string(u.Role), u.IsBlocked,
 	).Scan(&u.CreatedAt, &u.UpdatedAt)
 	if isUniqueViolation(err) {
 		return domain.ErrConflict
@@ -58,17 +60,49 @@ func (r *UserRepo) GetByPhone(ctx context.Context, phone string) (*domain.User, 
 	return scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE phone = $1`, phone))
 }
 
-// Update persists mutable profile fields.
+// GetByEmail fetches a user by case-insensitive email.
+func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
+	defer observe("users.get_by_email", time.Now())
+	return scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+`
+		FROM users WHERE LOWER(email) = LOWER($1) AND email IS NOT NULL AND email <> ''`, email))
+}
+
+// Update persists mutable profile fields. Changing the email address resets its
+// verified flag: ownership must be proven again at the new address.
 func (r *UserRepo) Update(ctx context.Context, u *domain.User) error {
 	defer observe("users.update", time.Now())
 	err := r.db.QueryRow(ctx, `UPDATE users
-		SET display_name = $2, email = NULLIF($3, '')
+		SET display_name = $2,
+		    email_verified = CASE WHEN email IS DISTINCT FROM NULLIF($3, '') THEN FALSE ELSE email_verified END,
+		    email_verified_at = CASE WHEN email IS DISTINCT FROM NULLIF($3, '') THEN NULL ELSE email_verified_at END,
+		    email = NULLIF($3, '')
 		WHERE id = $1
 		RETURNING updated_at`, u.ID, u.DisplayName, u.Email).Scan(&u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
 	}
+	if isUniqueViolation(err) {
+		return domain.ErrConflict
+	}
 	return err
+}
+
+// SetEmailVerified binds an address to a user after the code was confirmed.
+func (r *UserRepo) SetEmailVerified(ctx context.Context, id uuid.UUID, email string) error {
+	defer observe("users.set_email_verified", time.Now())
+	tag, err := r.db.Exec(ctx, `UPDATE users
+		SET email = $2, email_verified = TRUE, email_verified_at = NOW()
+		WHERE id = $1`, id, email)
+	if isUniqueViolation(err) {
+		return domain.ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // Delete removes a user; related rows cascade.

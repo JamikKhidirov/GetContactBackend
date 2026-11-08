@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: GetContact API
-  version: 1.0.0
+  version: 1.2.0
   description: |
     **GetContact** — бэкенд определения номеров: профили номеров, community-теги,
     спам-репорты, личная телефонная книга и админ-панель.
@@ -246,6 +246,126 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '429':
           $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/email/code:
+    post:
+      tags: [Auth, Email]
+      summary: Отправить одноразовый код на email
+      description: |
+        Создаёт 6-значный код и ставит событие доставки в транзакционный outbox
+        в одной транзакции с кодом. Kafka-воркер отправляет красивое HTML-письмо
+        с кодом. Назначения: `signup` (подтверждение почты при регистрации),
+        `login` (вход без пароля) и `verify_email` (подтверждение адреса в
+        авторизованной сессии; требует Bearer-токен).
+
+        Ответ не раскрывает, существует ли аккаунт с таким адресом. В
+        development с `EMAIL_PROVIDER=log` поле `dev_code` содержит код для
+        локального тестирования; в production оно всегда отсутствует.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailCodeRequest'
+            example:
+              email: "dzamikhidirov8@gmail.com"
+              purpose: "signup"
+      responses:
+        '202':
+          description: Код поставлен в очередь доставки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataEmailCodeResult'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Email-аутентификация отключена
+
+  /api/v1/auth/email/login:
+    post:
+      tags: [Auth, Email]
+      summary: Вход по email и одноразовому коду
+      description: |
+        Проверяет HMAC-хэш кода в постоянное время, атомарно «сжигает» код и
+        выдаёт пару токенов. Повторное использование кода возвращает 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailLoginRequest'
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataAuthResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/email/verify:
+    post:
+      tags: [Auth, Email]
+      summary: Запросить код подтверждения текущего адреса
+      description: |
+        Отправляет код на email авторизованного пользователя для подтверждения
+        владения адресом. Если `email` не передан, используется адрес профиля.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerifyRequest'
+      responses:
+        '202':
+          description: Код поставлен в очередь доставки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataEmailCodeResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/email/verify/confirm:
+    post:
+      tags: [Auth, Email]
+      summary: Подтвердить владение email
+      description: |
+        Проверяет код и привязывает адрес к аккаунту, выставляя
+        `email_verified=true`. Если адрес уже занят другим аккаунтом — 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerifyConfirmRequest'
+      responses:
+        '200':
+          description: Адрес подтверждён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Validation'
 
   /api/v1/auth/logout:
     post:
@@ -1389,7 +1509,7 @@ components:
           example: ok
         version:
           type: string
-          example: 1.0.0
+          example: 1.2.0
 
     Ready:
       type: object
@@ -1439,6 +1559,13 @@ components:
         email:
           type: string
           format: email
+        email_verified:
+          type: boolean
+          description: Адрес подтверждён одноразовым кодом.
+        email_verified_at:
+          type: string
+          format: date-time
+          nullable: true
         display_name:
           type: string
         role:
@@ -1530,8 +1657,91 @@ components:
           type: string
           format: email
           maxLength: 254
+        email_code:
+          type: string
+          pattern: '^[0-9]{4,12}$'
+          description: |
+            Необязательный код из письма с назначением `signup`. Если передан,
+            регистрация создаёт уже подтверждённый адрес (`email_verified=true`).
         device:
           $ref: '#/components/schemas/DeviceInfo'
+
+    EmailCodeRequest:
+      type: object
+      required: [email, purpose]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        purpose:
+          type: string
+          enum: [signup, login, verify_email]
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+
+    EmailLoginRequest:
+      type: object
+      required: [email, code]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        code:
+          type: string
+          pattern: '^[0-9]{4,12}$'
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+
+    EmailVerifyRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Если не передан, используется адрес из профиля.
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+
+    EmailVerifyConfirmRequest:
+      type: object
+      required: [code]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Если не передан, используется адрес из профиля.
+        code:
+          type: string
+          pattern: '^[0-9]{4,12}$'
+
+    EmailCodeResult:
+      type: object
+      properties:
+        sent:
+          type: boolean
+          example: true
+        email:
+          type: string
+          format: email
+        purpose:
+          type: string
+          enum: [signup, login, verify_email]
+        expires_at:
+          type: string
+          format: date-time
+        expires_in:
+          type: integer
+          example: 600
+        resend_after_seconds:
+          type: integer
+          example: 60
+        dev_code:
+          type: string
+          description: Только development + log provider. В production отсутствует.
 
     LoginRequest:
       type: object
@@ -2144,6 +2354,11 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/AuthResult'
+    DataEmailCodeResult:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/EmailCodeResult'
     DataUser:
       type: object
       properties:

@@ -89,6 +89,31 @@ var (
 		Help: "Authentication attempts by operation and result.",
 	}, []string{"operation", "result"})
 
+	// EmailRequests counts one-time code requests by purpose and result.
+	EmailRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "email", Name: "code_requests_total",
+		Help: "One-time email code requests by purpose and result.",
+	}, []string{"purpose", "result"})
+
+	// EmailDeliveries counts delivery attempts by provider and result.
+	EmailDeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "email", Name: "deliveries_total",
+		Help: "Email delivery attempts by provider and result.",
+	}, []string{"provider", "result"})
+
+	// EmailVerifyAttempts counts confirmation attempts.
+	EmailVerifyAttempts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "email", Name: "verify_attempts_total",
+		Help: "Email code confirmation attempts by purpose and result.",
+	}, []string{"purpose", "result"})
+
+	// EmailOutboxBacklog is the number of transactional outbox rows waiting to
+	// be published to Kafka.
+	EmailOutboxBacklog = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Subsystem: "email", Name: "outbox_backlog",
+		Help: "Unpublished transactional outbox events.",
+	})
+
 	// BuildInfo exposes the running version.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "build_info",

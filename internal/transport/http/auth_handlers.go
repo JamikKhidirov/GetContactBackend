@@ -34,6 +34,7 @@ type registerRequest struct {
 	Password    string      `json:"password"`
 	DisplayName string      `json:"display_name"`
 	Email       string      `json:"email"`
+	EmailCode   string      `json:"email_code,omitempty"`
 	Device      *deviceInfo `json:"device,omitempty"`
 }
 
@@ -44,7 +45,8 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := a.auth.Register(r.Context(), service.RegisterInput{
-		Phone: req.Phone, Password: req.Password, DisplayName: req.DisplayName, Email: req.Email,
+		Phone: req.Phone, Password: req.Password, DisplayName: req.DisplayName,
+		Email: req.Email, EmailCode: req.EmailCode,
 	}, metaFrom(r, req.Device))
 	if err != nil {
 		writeError(w, r, a.log, err)

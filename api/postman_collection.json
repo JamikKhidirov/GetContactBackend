@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "7a0ae632-b6c5-4597-8050-358532596a6b",
+    "_postman_id": "c34b54ee-75c5-4c9b-9067-865b82dd3e66",
     "name": "GetContact API",
     "description": "Полная коллекция GetContact API.\n\n1. Запустите `docker compose -f deploy/docker/docker-compose.yml up -d --build`.\n2. Выберите окружение `GetContact Local`.\n3. Выполните **Auth → Register** (или Login) — токены сохранятся автоматически.\n4. Остальные запросы используют `{{accessToken}}`.\n\nAdmin-запросы используют `{{adminAccessToken}}` (Admin → Login).\nПапка **99 Destructive** удаляет данные — запускайте осознанно.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -115,6 +115,21 @@
     },
     {
       "key": "sessionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "testEmail",
+      "value": "dzamikhidirov8@gmail.com",
+      "type": "string"
+    },
+    {
+      "key": "emailCode",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "emailAccessToken",
       "value": "",
       "type": "string"
     }
@@ -450,6 +465,354 @@
                 "type": "text/javascript",
                 "exec": [
                   "const json = pm.response.json();\npm.test('status is 2xx', () => pm.response.to.be.success);\nif (json.data && json.data.tokens) {\n  pm.collectionVariables.set('accessToken', json.data.tokens.access_token);\n  pm.collectionVariables.set('refreshToken', json.data.tokens.refresh_token);\n  pm.collectionVariables.set('userId', json.data.user.id);\n}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Email: request signup code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/email/code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "email",
+                "code"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Ставит код и событие доставки в transactional outbox одной транзакцией. В development с EMAIL_PROVIDER=log ответ содержит dev_code.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"purpose\": \"signup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                  "if (json.data && json.data.dev_code) {",
+                  "  pm.collectionVariables.set('emailCode', json.data.dev_code);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Email: register with code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Создаёт пользователя с уже подтверждённым адресом. Используйте уникальный plus-адрес (name+tag@example.com), если аккаунт с этим email уже существует.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"password\": \"{{userPassword}}\",\n  \"display_name\": \"Email User\",\n  \"email\": \"{{testEmail}}\",\n  \"email_code\": \"{{emailCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();\npm.test('status is 2xx', () => pm.response.to.be.success);\nif (json.data && json.data.tokens) {\n  pm.collectionVariables.set('accessToken', json.data.tokens.access_token);\n  pm.collectionVariables.set('refreshToken', json.data.tokens.refresh_token);\n  pm.collectionVariables.set('userId', json.data.user.id);\n}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Email: request login code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/email/code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "email",
+                "code"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Ответ не раскрывает, существует ли аккаунт с таким адресом.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"purpose\": \"login\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                  "if (json.data && json.data.dev_code) {",
+                  "  pm.collectionVariables.set('emailCode', json.data.dev_code);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Email: login with code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/email/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "email",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Код одноразовый: повторная попытка вернёт 401.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"code\": \"{{emailCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();\npm.test('status is 2xx', () => pm.response.to.be.success);\nif (json.data && json.data.tokens) {\n  pm.collectionVariables.set('accessToken', json.data.tokens.access_token);\n  pm.collectionVariables.set('refreshToken', json.data.tokens.refresh_token);\n  pm.collectionVariables.set('userId', json.data.user.id);\n}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Email: request verify code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/email/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "email",
+                "verify"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Требует Bearer-токен. Если email не передан, берётся адрес профиля.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                  "if (json.data && json.data.dev_code) {",
+                  "  pm.collectionVariables.set('emailCode', json.data.dev_code);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Email: confirm verify",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/email/verify/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "email",
+                "verify",
+                "confirm"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Проверяет код и привязывает адрес к текущему аккаунту.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"code\": \"{{emailCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "if (json.data && json.data.email_verified) {",
+                  "  pm.test('email is verified', () => pm.expect(json.data.email_verified).to.eql(true));",
+                  "}"
                 ]
               }
             }

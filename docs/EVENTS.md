@@ -140,6 +140,78 @@ kafka-topics.sh --bootstrap-server kafka:9092 \
 }
 ```
 
+### `email.code_requested`
+
+Публикуется relay'ем из transactional outbox `email_outbox` — в той же
+транзакции, что и INSERT кода. `aggregate_id` = verification UUID. Payload
+**не содержит сам код**: worker загружает AES-GCM-шифртекст из БД и расшифровывает
+его непосредственно перед отправкой.
+
+```json
+{
+  "verification_id": "b5c6d7e8-9f00-4a1b-8c2d-3e4f5a6b7c8d",
+  "email": "user@example.com",
+  "purpose": "login",
+  "expires_at": "2026-01-01T10:10:00Z"
+}
+```
+
+### `email.delivered`
+
+Публикуется worker'ом после успешной передачи письма провайдеру.
+`aggregate_id` = verification UUID.
+
+```json
+{
+  "verification_id": "b5c6d7e8-9f00-4a1b-8c2d-3e4f5a6b7c8d",
+  "email": "user@example.com",
+  "purpose": "login",
+  "provider": "smtp"
+}
+```
+
+### `email.delivery_failed`
+
+Публикуется после исчерпания ретраев или постоянной ошибки (например,
+просроченный код). `aggregate_id` = verification UUID.
+
+```json
+{
+  "verification_id": "b5c6d7e8-9f00-4a1b-8c2d-3e4f5a6b7c8d",
+  "email": "user@example.com",
+  "purpose": "login",
+  "provider": "smtp",
+  "error": "smtp dial smtp.example.com:587: connection refused"
+}
+```
+
+### `user.email_verified`
+
+Публикуется после подтверждения владения адресом. `aggregate_id` = user UUID.
+
+```json
+{
+  "user_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44",
+  "email": "user@example.com"
+}
+```
+
+### `user.email_login`
+
+Публикуется после успешного passwordless-входа по коду. `aggregate_id` = user UUID.
+
+```json
+{
+  "user_id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44",
+  "session_id": "3f6b1c2a-7d4e-4a9b-8c1d-2e3f4a5b6c7d",
+  "email": "user@example.com",
+  "ip": "203.0.113.7",
+  "user_agent": "GetContact/1.2.3 (Android 15)",
+  "device_id": "8f3c2a7e-1b2d-4c5e-9f00-1234567890ab",
+  "client": "android"
+}
+```
+
 ### `contact.created`
 
 Публикуется после создания контакта и после bulk-import (на каждый контакт).
@@ -257,6 +329,11 @@ kafka-topics.sh --bootstrap-server kafka:9092 \
 | `user.logged_in` | user UUID | успешный вход (IP/устройство) |
 | `user.session_revoked` | user UUID | завершение сессии |
 | `user.blocked` | user UUID | block/unblock |
+| `email.code_requested` | verification UUID | код поставлен в outbox |
+| `email.delivered` | verification UUID | письмо передано провайдеру |
+| `email.delivery_failed` | verification UUID | доставка не удалась |
+| `user.email_verified` | user UUID | адрес подтверждён |
+| `user.email_login` | user UUID | вход по email-коду |
 | `contact.created` | contact UUID | create/import |
 | `number.looked_up` | phone | каждый lookup |
 | `number.tag_added` | phone | add/upsert tag |
@@ -278,6 +355,25 @@ kafka-topics.sh --bootstrap-server kafka:9092 \
   инкрементирует `getcontact_kafka_events_total{direction="publish",result="error"}`.
 - Событие создаётся после успешной записи в БД. При падении между commit и
   publish событие может потеряться — для строгой гарантии нужен outbox.
+
+### Transactional outbox для email
+
+Email-события не используют best-effort producer:
+
+1. API в одной транзакции PostgreSQL вставляет `email_verifications` и
+   `email_outbox`.
+2. Relay в API (`OutboxRelay`) раз в секунду забирает пачку через
+   `FOR UPDATE SKIP LOCKED` под advisory-lock, публикует в Kafka с acks=all и
+   выставляет `published_at`.
+3. Если API упал до публикации, строка остаётся pending и будет опубликована
+   после рестарта. Дубликаты безопасны: `audit_events` идемпотентен, а worker
+   проверяет `delivered_at` перед отправкой.
+4. `email.delivered` / `email.delivery_failed` тоже пишутся в outbox, поэтому
+   аудит доставки переживает недоступность Kafka.
+
+Метрики: `getcontact_email_outbox_backlog`,
+`getcontact_email_code_requests_total`, `getcontact_email_deliveries_total`,
+`getcontact_email_verify_attempts_total`.
 
 ### Consumer
 
@@ -382,10 +478,11 @@ docker exec -it gc-postgres psql -U getcontact -d getcontact \
 ```
 
 Ожидаемо после e2e-теста: `user.registered`, `user.logged_in`,
-`user.session_revoked`, `contact.created`, `number.looked_up`,
-`number.tag_added`, `number.name_added`, `number.name_removed`,
-`number.spam_reported`, `number.spam_deleted`, `admin.number_viewed`,
-`admin.number_updated`.
+`user.session_revoked`, `email.code_requested`, `email.delivered`,
+`user.email_verified`, `user.email_login`, `contact.created`,
+`number.looked_up`, `number.tag_added`, `number.name_added`,
+`number.name_removed`, `number.spam_reported`, `number.spam_deleted`,
+`admin.number_viewed`, `admin.number_updated`.
 
 ---
 

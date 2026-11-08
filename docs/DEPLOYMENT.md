@@ -35,6 +35,8 @@ Go-модули не требуют CGO. Бинарники статически
 | `REDIS_ADDR` | да | `redis:6379` | хост:порт |
 | `JWT_SECRET` | да | 32+ случайных символа | в production короче 32 → сервис не стартует |
 | `KAFKA_BROKERS` | да | `kafka:9092` | через запятую |
+| `EMAIL_CODE_SECRET` | при email | 32+ случайных символа | HMAC + AES-GCM ключ; в production dev-значение запрещено |
+| `SMTP_HOST` / `SMTP_USERNAME` / `SMTP_PASSWORD` | при `EMAIL_PROVIDER=smtp` | `smtp.gmail.com` / адрес / app password | свободный SMTP |
 | `ADMIN_PHONE` / `ADMIN_PASSWORD` | нет | `+79990000000` / `Admin12345` | bootstrap админа |
 
 ### Тюнинг
@@ -55,6 +57,15 @@ Go-модули не требуют CGO. Бинарники статически
 | `RATE_LIMIT_PUBLIC_RPM` | `120` | публичные запросы/мин/IP |
 | `RATE_LIMIT_AUTH_RPM` | `20` | auth-запросы/мин/IP |
 | `KAFKA_ENABLED` | `true` | `false` отключает producer/consumer |
+| `EMAIL_ENABLED` | `true` | включает OTP-аутентификацию |
+| `EMAIL_PROVIDER` | `log` | `log` (локально) или `smtp`; в production только `smtp` |
+| `EMAIL_FROM_ADDRESS` | `no-reply@getcontact.local` | отправитель |
+| `EMAIL_CODE_TTL` | `10m` | срок жизни кода |
+| `EMAIL_CODE_MAX_ATTEMPTS` | `5` | попыток ввода |
+| `EMAIL_CODE_COOLDOWN` | `60s` | пауза на адрес + назначение |
+| `EMAIL_DEV_ECHO` | `true` в development | `dev_code` в ответе; в production принудительно `false` |
+| `SMTP_PORT` / `SMTP_TLS` | `587` / `true` | STARTTLS; для 465 используется implicit TLS |
+| `EMAIL_OUTBOX_INTERVAL` / `EMAIL_OUTBOX_BATCH` | `1s` / `50` | настройки relay |
 | `CORS_ALLOWED_ORIGINS` | `*` | список через запятую |
 
 > В production задайте конкретные origins, а не `*`.

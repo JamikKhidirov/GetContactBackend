@@ -125,3 +125,47 @@ type UserSessionRevoked struct {
 	SessionID uuid.UUID `json:"session_id"`
 	ActorID   uuid.UUID `json:"actor_id"`
 }
+
+// EmailCodeRequested asks the worker to deliver a one-time code. The code is
+// deliberately absent: the worker loads and decrypts it from the database, so
+// the Kafka topic and audit log never contain a usable credential.
+type EmailCodeRequested struct {
+	VerificationID uuid.UUID `json:"verification_id"`
+	Email          string    `json:"email"`
+	Purpose        string    `json:"purpose"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+// EmailDelivered records a successful hand-off to the mail provider.
+type EmailDelivered struct {
+	VerificationID uuid.UUID `json:"verification_id"`
+	Email          string    `json:"email"`
+	Purpose        string    `json:"purpose"`
+	Provider       string    `json:"provider"`
+}
+
+// EmailDeliveryFailed records an unrecoverable delivery failure.
+type EmailDeliveryFailed struct {
+	VerificationID uuid.UUID `json:"verification_id"`
+	Email          string    `json:"email"`
+	Purpose        string    `json:"purpose"`
+	Provider       string    `json:"provider"`
+	Error          string    `json:"error"`
+}
+
+// UserEmailVerified is emitted after a user proves ownership of an address.
+type UserEmailVerified struct {
+	UserID uuid.UUID `json:"user_id"`
+	Email  string    `json:"email"`
+}
+
+// UserEmailLogin is emitted after a successful passwordless email login.
+type UserEmailLogin struct {
+	UserID    uuid.UUID `json:"user_id"`
+	SessionID uuid.UUID `json:"session_id"`
+	Email     string    `json:"email"`
+	IP        string    `json:"ip,omitempty"`
+	UserAgent string    `json:"user_agent,omitempty"`
+	DeviceID  string    `json:"device_id,omitempty"`
+	Client    string    `json:"client,omitempty"`
+}

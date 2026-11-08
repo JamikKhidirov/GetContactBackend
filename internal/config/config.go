@@ -20,6 +20,7 @@ type Config struct {
 	Redis RedisConfig
 	Kafka KafkaConfig
 	Auth  AuthConfig
+	Email EmailConfig
 	CORS  CORSConfig
 	Rate  RateConfig
 	Admin AdminConfig
@@ -70,6 +71,32 @@ type AuthConfig struct {
 	ArgonKeyLen     uint32
 }
 
+// EmailConfig controls one-time email codes and the transactional outbox.
+type EmailConfig struct {
+	Enabled        bool
+	Provider       string
+	FromName       string
+	FromAddress    string
+	ReplyTo        string
+	SupportEmail   string
+	BrandName      string
+	SMTPHost       string
+	SMTPPort       int
+	SMTPUsername   string
+	SMTPPassword   string
+	SMTPTLS        bool
+	SMTPTimeout    time.Duration
+	CodeTTL        time.Duration
+	CodeLength     int
+	MaxAttempts    int
+	Cooldown       time.Duration
+	Secret         string
+	DevEcho        bool
+	OutboxInterval time.Duration
+	OutboxBatch    int
+	OutboxMaxTries int
+}
+
 type CORSConfig struct {
 	AllowedOrigins []string
 	AllowedMethods []string
@@ -94,7 +121,7 @@ func Load() (*Config, error) {
 	c := &Config{
 		Env:         env("APP_ENV", "development"),
 		ServiceName: env("SERVICE_NAME", "getcontact-api"),
-		Version:     env("APP_VERSION", "1.0.0"),
+		Version:     env("APP_VERSION", "1.2.0"),
 		HTTP: HTTPConfig{
 			Addr:            env("HTTP_ADDR", ":8080"),
 			ReadTimeout:     envDuration("HTTP_READ_TIMEOUT", 15*time.Second),
@@ -135,6 +162,30 @@ func Load() (*Config, error) {
 			ArgonThreads:    uint8(envInt("ARGON2_THREADS", 2)),
 			ArgonKeyLen:     uint32(envInt("ARGON2_KEY_LEN", 32)),
 		},
+		Email: EmailConfig{
+			Enabled:        envBool("EMAIL_ENABLED", true),
+			Provider:       env("EMAIL_PROVIDER", "log"),
+			FromName:       env("EMAIL_FROM_NAME", "GetContact"),
+			FromAddress:    env("EMAIL_FROM_ADDRESS", "no-reply@getcontact.local"),
+			ReplyTo:        env("EMAIL_REPLY_TO", ""),
+			SupportEmail:   env("EMAIL_SUPPORT_ADDRESS", "support@getcontact.local"),
+			BrandName:      env("EMAIL_BRAND_NAME", "GetContact"),
+			SMTPHost:       env("SMTP_HOST", ""),
+			SMTPPort:       envInt("SMTP_PORT", 587),
+			SMTPUsername:   env("SMTP_USERNAME", ""),
+			SMTPPassword:   env("SMTP_PASSWORD", ""),
+			SMTPTLS:        envBool("SMTP_TLS", true),
+			SMTPTimeout:    envDuration("SMTP_TIMEOUT", 10*time.Second),
+			CodeTTL:        envDuration("EMAIL_CODE_TTL", 10*time.Minute),
+			CodeLength:     envInt("EMAIL_CODE_LENGTH", 6),
+			MaxAttempts:    envInt("EMAIL_CODE_MAX_ATTEMPTS", 5),
+			Cooldown:       envDuration("EMAIL_CODE_COOLDOWN", 60*time.Second),
+			Secret:         env("EMAIL_CODE_SECRET", "dev-email-code-secret-change-me-please"),
+			DevEcho:        envBool("EMAIL_DEV_ECHO", env("APP_ENV", "development") != "production"),
+			OutboxInterval: envDuration("EMAIL_OUTBOX_INTERVAL", time.Second),
+			OutboxBatch:    envInt("EMAIL_OUTBOX_BATCH", 50),
+			OutboxMaxTries: envInt("EMAIL_OUTBOX_MAX_ATTEMPTS", 25),
+		},
 		CORS: CORSConfig{
 			AllowedOrigins: split(env("CORS_ALLOWED_ORIGINS", "*")),
 			AllowedMethods: split(env("CORS_ALLOWED_METHODS", "GET,POST,PATCH,PUT,DELETE,OPTIONS")),
@@ -158,6 +209,26 @@ func Load() (*Config, error) {
 	}
 	if c.DB.MaxConns < c.DB.MinConns {
 		return nil, fmt.Errorf("DB_MAX_CONNS must be >= DB_MIN_CONNS")
+	}
+	if c.Email.CodeLength < 4 || c.Email.CodeLength > 12 {
+		return nil, fmt.Errorf("EMAIL_CODE_LENGTH must be between 4 and 12")
+	}
+	if c.Email.CodeTTL <= 0 || c.Email.MaxAttempts <= 0 || c.Email.Cooldown < 0 {
+		return nil, fmt.Errorf("EMAIL_CODE_TTL and EMAIL_CODE_MAX_ATTEMPTS must be positive")
+	}
+	if c.IsProduction() {
+		// Never leak a code in an API response or fall back to a transport that
+		// silently drops mail in production.
+		c.Email.DevEcho = false
+		if c.Email.Enabled && !strings.EqualFold(c.Email.Provider, "smtp") {
+			return nil, fmt.Errorf("EMAIL_PROVIDER must be smtp in production")
+		}
+		if strings.Contains(c.Email.Secret, "change-me") || len(c.Email.Secret) < 32 {
+			return nil, fmt.Errorf("EMAIL_CODE_SECRET must be a unique value of at least 32 characters in production")
+		}
+	}
+	if c.Email.Enabled && strings.EqualFold(c.Email.Provider, "smtp") && c.Email.SMTPHost == "" {
+		return nil, fmt.Errorf("SMTP_HOST is required when EMAIL_PROVIDER=smtp")
 	}
 	return c, nil
 }

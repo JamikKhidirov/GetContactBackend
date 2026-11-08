@@ -20,15 +20,17 @@ const (
 
 // User is a registered platform member.
 type User struct {
-	ID           uuid.UUID `json:"id"`
-	Phone        string    `json:"phone"`
-	Email        string    `json:"email,omitempty"`
-	PasswordHash string    `json:"-"`
-	DisplayName  string    `json:"display_name"`
-	Role         Role      `json:"role"`
-	IsBlocked    bool      `json:"is_blocked"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID              uuid.UUID  `json:"id"`
+	Phone           string     `json:"phone"`
+	Email           string     `json:"email,omitempty"`
+	EmailVerified   bool       `json:"email_verified"`
+	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
+	PasswordHash    string     `json:"-"`
+	DisplayName     string     `json:"display_name"`
+	Role            Role       `json:"role"`
+	IsBlocked       bool       `json:"is_blocked"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // Public returns a copy safe to expose over the API.
@@ -144,6 +146,43 @@ type TokenPair struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
+// EmailVerification is a single one-time code sent to an email address.
+// The plaintext code is only kept AES-GCM encrypted for the delivery worker;
+// verification compares an HMAC instead of the code itself.
+type EmailVerification struct {
+	ID               uuid.UUID  `json:"id"`
+	Email            string     `json:"email"`
+	UserID           *uuid.UUID `json:"user_id,omitempty"`
+	Purpose          string     `json:"purpose"`
+	CodeHash         string     `json:"-"`
+	CodeCiphertext   string     `json:"-"`
+	Attempts         int        `json:"attempts"`
+	MaxAttempts      int        `json:"max_attempts"`
+	DeliveryAttempts int        `json:"delivery_attempts"`
+	RequestIP        string     `json:"request_ip,omitempty"`
+	UserAgent        string     `json:"user_agent,omitempty"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	ConsumedAt       *time.Time `json:"consumed_at,omitempty"`
+	DeliveredAt      *time.Time `json:"delivered_at,omitempty"`
+	DeliveryError    string     `json:"delivery_error,omitempty"`
+	LastAttemptAt    *time.Time `json:"last_attempt_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+}
+
+// OutboxMessage is a Kafka event committed atomically with a business write.
+type OutboxMessage struct {
+	EventID      uuid.UUID  `json:"event_id"`
+	EventType    string     `json:"event_type"`
+	EventVersion int        `json:"event_version"`
+	AggregateID  string     `json:"aggregate_id"`
+	Payload      []byte     `json:"payload"`
+	OccurredAt   time.Time  `json:"occurred_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	PublishedAt  *time.Time `json:"published_at,omitempty"`
+	Attempts     int        `json:"attempts"`
+	LastError    string     `json:"last_error,omitempty"`
+}
+
 // Event is an immutable fact published to Kafka.
 type Event struct {
 	ID          uuid.UUID `json:"id"`
@@ -169,6 +208,11 @@ const (
 	EventAdminNumberUpdated = "admin.number_updated"
 	EventUserLoggedIn       = "user.logged_in"
 	EventUserSessionRevoked = "user.session_revoked"
+	EventEmailCodeRequested = "email.code_requested"
+	EventEmailDelivered     = "email.delivered"
+	EventEmailFailed        = "email.delivery_failed"
+	EventUserEmailVerified  = "user.email_verified"
+	EventUserEmailLogin     = "user.email_login"
 )
 
 // NumberName is a community-submitted name for a phone number. Each user has

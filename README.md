@@ -45,6 +45,7 @@ Postman, unit- и black-box интеграционные тесты.
 - 📇 Личная телефонная книга + bulk import
 - 🔍 Единый поиск по номерам и контактам
 - 📦 Пакетный lookup до 100 номеров
+- ✉️ Вход по email: одноразовый код в красивом HTML-письме
 - 🛡️ Админка: статистика, блокировки, модерация, аудит
 
 </td>
@@ -55,6 +56,7 @@ Postman, unit- и black-box интеграционные тесты.
 - 🐘 PostgreSQL 16 + pgx, индексы и триггеры
 - ⚡ Redis: кэш, fixed-window rate limit, JWT blacklist
 - 📨 Kafka: события, consumer group, DLQ, idempotency
+- 📤 Transactional outbox: ни одно email-событие не теряется
 - 📈 Prometheus + Grafana + алерты
 - 🐳 Docker Compose и ☸️ Kubernetes (HPA, PDB, probes)
 
@@ -114,6 +116,43 @@ docker exec gc-grafana grafana cli admin reset-admin-password Admin12345
 
 > ⚠️ Смените `JWT_SECRET`, `ADMIN_PASSWORD`, `GF_SECURITY_ADMIN_PASSWORD` и пароль
 > Postgres перед любым реальным деплоем.
+
+---
+
+## ✉️ Email-аутентификация
+
+Коды никогда не хранятся в открытом виде: в БД лежит HMAC-SHA256 для проверки и
+AES-GCM-шифртекст для воркера. API в одной транзакции пишет код и событие в
+`email_outbox`, relay публикует его в Kafka, а worker рендерит HTML-письмо и
+отправляет через SMTP. Поэтому падение API между commit и publish не теряет
+письмо.
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `EMAIL_ENABLED` | `true` | Включить email-аутентификацию |
+| `EMAIL_PROVIDER` | `log` | `log` (бесплатно, локально) или `smtp` |
+| `EMAIL_FROM_ADDRESS` | `no-reply@getcontact.local` | Отправитель |
+| `EMAIL_CODE_TTL` | `10m` | Срок жизни кода |
+| `EMAIL_CODE_MAX_ATTEMPTS` | `5` | Попыток ввода |
+| `EMAIL_CODE_COOLDOWN` | `60s` | Пауза между запросами для адреса и назначения |
+| `EMAIL_CODE_SECRET` | dev-значение | HMAC + AES ключ; в production минимум 32 уникальных символа |
+| `EMAIL_DEV_ECHO` | `true` в development | Возвращать `dev_code` в ответе (никогда в production) |
+| `SMTP_HOST` / `SMTP_PORT` | — / `587` | SMTP-сервер |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | — | Логин и app password |
+| `SMTP_TLS` | `true` | STARTTLS для 587, implicit TLS для 465 |
+
+Бесплатные варианты: локально `EMAIL_PROVIDER=log`; реальная доставка —
+Gmail App Password, Mailtrap, Resend, Brevo или любой SMTP. Для Gmail включите
+2FA и создайте App Password, обычный пароль аккаунта не подойдёт.
+
+```bash
+# Реальная отправка через Gmail SMTP
+EMAIL_PROVIDER=smtp \
+EMAIL_FROM_ADDRESS=you@gmail.com \
+SMTP_HOST=smtp.gmail.com SMTP_PORT=587 \
+SMTP_USERNAME=you@gmail.com SMTP_PASSWORD='your-app-password' \
+docker compose -f deploy/docker/docker-compose.yml up -d --build
+```
 
 ---
 
@@ -258,13 +297,17 @@ sequenceDiagram
 
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
-| `POST` | `/api/v1/auth/register` | 🔓 | Регистрация + выдача токенов |
+| `POST` | `/api/v1/auth/register` | 🔓 | Регистрация + выдача токенов; опционально `email_code` |
 | `POST` | `/api/v1/auth/login` | 🔓 | Вход по телефону/паролю |
+| `POST` | `/api/v1/auth/email/code` | 🔓 | Одноразовый код на email (`signup` / `login`) |
+| `POST` | `/api/v1/auth/email/login` | 🔓 | Вход по email + коду |
 | `POST` | `/api/v1/auth/refresh` | 🔓 | Ротация refresh-токена |
 | `POST` | `/api/v1/auth/logout` | 🔑 | Отзыв refresh + blacklist access |
 | `GET` | `/api/v1/auth/me` | 🔑 | Текущий профиль |
 | `GET` | `/api/v1/auth/sessions` | 🔑 | Свои активные сессии и устройства |
 | `DELETE` | `/api/v1/auth/sessions/{sessionID}` | 🔑 | Завершить свою сессию |
+| `POST` | `/api/v1/auth/email/verify` | 🔑 | Запросить код подтверждения адреса |
+| `POST` | `/api/v1/auth/email/verify/confirm` | 🔑 | Подтвердить владение email |
 
 ### Users
 
@@ -336,6 +379,16 @@ BOM и zero-width символы вырезаются, результат все
 curl -s -X POST http://localhost:8080/api/v1/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"phone":"+79991234567","password":"Passw0rd123","display_name":"Ivan"}'
+
+# Email OTP: запросить код (в development ответ содержит dev_code)
+curl -s -X POST http://localhost:8080/api/v1/auth/email/code \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"dzamikhidirov8@gmail.com","purpose":"login"}'
+
+# Email OTP: войти по коду
+curl -s -X POST http://localhost:8080/api/v1/auth/email/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"dzamikhidirov8@gmail.com","code":"123456"}'
 
 # Caller-ID
 curl -s http://localhost:8080/api/v1/numbers/+79991234567
@@ -562,10 +615,10 @@ unblock → смена пароля → старый пароль 401 → уда
 
 ```bash
 # 1. Соберите и запушьте образы (замените registry)
-docker build -f deploy/docker/Dockerfile --target api    -t ghcr.io/your-org/getcontact-api:1.0.0    .
-docker build -f deploy/docker/Dockerfile --target worker -t ghcr.io/your-org/getcontact-worker:1.0.0 .
-docker push ghcr.io/your-org/getcontact-api:1.0.0
-docker push ghcr.io/your-org/getcontact-worker:1.0.0
+docker build -f deploy/docker/Dockerfile --target api    -t ghcr.io/your-org/getcontact-api:1.2.0    .
+docker build -f deploy/docker/Dockerfile --target worker -t ghcr.io/your-org/getcontact-worker:1.2.0 .
+docker push ghcr.io/your-org/getcontact-api:1.2.0
+docker push ghcr.io/your-org/getcontact-worker:1.2.0
 
 # 2. Секреты и деплой
 kubectl apply -f deploy/k8s/00-namespace.yaml

@@ -12,8 +12,10 @@ type UserRepository interface {
 	Create(ctx context.Context, u *User) error
 	GetByID(ctx context.Context, id uuid.UUID) (*User, error)
 	GetByPhone(ctx context.Context, phone string) (*User, error)
+	GetByEmail(ctx context.Context, email string) (*User, error)
 	Update(ctx context.Context, u *User) error
 	UpdatePassword(ctx context.Context, id uuid.UUID, hash string) error
+	SetEmailVerified(ctx context.Context, id uuid.UUID, email string) error
 	SetBlocked(ctx context.Context, id uuid.UUID, blocked bool) error
 	SetRole(ctx context.Context, id uuid.UUID, role Role) error
 	Delete(ctx context.Context, id uuid.UUID) error
@@ -91,4 +93,36 @@ type AuditRepository interface {
 // EventRepository is the worker-side idempotent audit store.
 type EventRepository interface {
 	Insert(ctx context.Context, topic string, ev Event) (bool, error)
+}
+
+// EmailRepository persists one-time email codes and the transactional outbox.
+type EmailRepository interface {
+	// CreateVerification stores a new code and, atomically, the Kafka event
+	// that will ask the worker to deliver it.
+	CreateVerification(ctx context.Context, v *EmailVerification, outbox *OutboxMessage) error
+	GetVerification(ctx context.Context, id uuid.UUID) (*EmailVerification, error)
+	// LatestVerification returns the newest unconsumed, unexpired code for an
+	// address and purpose.
+	LatestVerification(ctx context.Context, email, purpose string) (*EmailVerification, error)
+	// LastRequestedAt returns the most recent code request for an address and
+	// purpose, or the zero time when none exists. It enforces the cooldown.
+	LastRequestedAt(ctx context.Context, email, purpose string) (time.Time, error)
+	// IncrementAttempts records a wrong guess and returns the new attempt count.
+	IncrementAttempts(ctx context.Context, id uuid.UUID) (int, error)
+	ConsumeVerification(ctx context.Context, id uuid.UUID) (bool, error)
+	MarkDelivered(ctx context.Context, id uuid.UUID) error
+	MarkDeliveryFailed(ctx context.Context, id uuid.UUID, reason string) error
+	// SetEmailVerified binds a verified address to a user and marks it verified.
+	SetEmailVerified(ctx context.Context, userID uuid.UUID, email string) error
+
+	// Enqueue stores a standalone outbox event (used by the delivery worker).
+	Enqueue(ctx context.Context, msg *OutboxMessage) error
+	ClaimOutbox(ctx context.Context, limit, maxAttempts int) ([]OutboxMessage, error)
+	MarkOutboxPublished(ctx context.Context, eventID uuid.UUID) error
+	MarkOutboxFailed(ctx context.Context, eventID uuid.UUID, reason string) error
+	OutboxBacklog(ctx context.Context) (int64, error)
+	// AcquireOutboxLock prevents two relay instances from double-publishing.
+	// It returns a release function and false when another relay holds the lock.
+	AcquireOutboxLock(ctx context.Context) (release func(), acquired bool, err error)
+	PurgeExpired(ctx context.Context, before time.Time) (int64, error)
 }

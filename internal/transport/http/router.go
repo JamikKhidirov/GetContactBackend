@@ -26,6 +26,7 @@ type Deps struct {
 	Log       *slog.Logger
 	Version   string
 	Auth      *service.AuthService
+	Email     *service.EmailAuthService
 	Users     *service.UserService
 	Contacts  *service.ContactService
 	Numbers   *service.NumberService
@@ -43,6 +44,7 @@ type API struct {
 	log       *slog.Logger
 	version   string
 	auth      *service.AuthService
+	email     *service.EmailAuthService
 	users     *service.UserService
 	contacts  *service.ContactService
 	numbers   *service.NumberService
@@ -58,7 +60,7 @@ type API struct {
 func New(d Deps) http.Handler {
 	a := &API{
 		cfg: d.Config, log: d.Log, version: d.Version,
-		auth: d.Auth, users: d.Users, contacts: d.Contacts, numbers: d.Numbers,
+		auth: d.Auth, email: d.Email, users: d.Users, contacts: d.Contacts, numbers: d.Numbers,
 		searchSvc: d.Search, admin: d.Admin, tokens: d.Tokens, cache: d.Cache,
 		db: d.DB, pub: d.Publisher,
 	}
@@ -112,6 +114,8 @@ func New(d Deps) http.Handler {
 			r.Post("/auth/register", a.register)
 			r.Post("/auth/login", a.login)
 			r.Post("/auth/refresh", a.refresh)
+			r.With(a.optionalAuth).Post("/auth/email/code", a.requestEmailCode)
+			r.Post("/auth/email/login", a.emailLogin)
 		})
 
 		// Authenticated endpoints.
@@ -123,6 +127,8 @@ func New(d Deps) http.Handler {
 			r.Get("/auth/me", a.me)
 			r.Get("/auth/sessions", a.listSessions)
 			r.Delete("/auth/sessions/{sessionID}", a.revokeSession)
+			r.Post("/auth/email/verify", a.requestEmailVerification)
+			r.Post("/auth/email/verify/confirm", a.confirmEmailVerification)
 
 			r.Get("/users/me/stats", a.personalStats)
 			r.Get("/users/{id}", a.getUser)

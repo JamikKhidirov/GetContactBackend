@@ -55,7 +55,13 @@ type AuthService struct {
 	argon      platform.ArgonParams
 	pub        events.Publisher
 	log        *slog.Logger
+	emailAuth  *EmailAuthService
 }
+
+// SetEmailAuth attaches the email code verifier used by registration. It is a
+// setter to keep the wiring order simple (the email service needs AuthService
+// for session issuance).
+func (s *AuthService) SetEmailAuth(e *EmailAuthService) { s.emailAuth = e }
 
 // NewAuthService wires the authentication use cases.
 func NewAuthService(
@@ -78,6 +84,9 @@ type RegisterInput struct {
 	Password    string
 	DisplayName string
 	Email       string
+	// EmailCode is optional. When present, it must be a valid signup code for
+	// Email; registration then creates an already-verified address.
+	EmailCode string
 }
 
 // Register creates a user and returns the first token pair.
@@ -94,12 +103,38 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput, meta Meta)
 	if err := platform.ValidateDisplayName(in.DisplayName); err != nil {
 		fields["display_name"] = err.Error()
 	}
-	if err := platform.ValidateEmail(in.Email); err != nil {
-		fields["email"] = err.Error()
+	email := ""
+	if strings.TrimSpace(in.Email) != "" {
+		normalized, err := platform.NormalizeEmail(in.Email)
+		if err != nil {
+			fields["email"] = err.Error()
+		} else {
+			email = normalized
+		}
+	}
+	if strings.TrimSpace(in.EmailCode) != "" {
+		if email == "" {
+			fields["email"] = "email is required when email_code is supplied"
+		} else if s.emailAuth == nil {
+			return nil, apperr.Internal(errors.New("email authentication is not configured"))
+		}
 	}
 	if len(fields) > 0 {
 		metrics.AuthAttempts.WithLabelValues("register", "invalid").Inc()
 		return nil, apperr.Invalid(fields)
+	}
+
+	emailVerified := false
+	if strings.TrimSpace(in.EmailCode) != "" {
+		if err := s.emailAuth.ConfirmSignupCode(ctx, email, in.EmailCode); err != nil {
+			metrics.AuthAttempts.WithLabelValues("register", "invalid").Inc()
+			var appErr *apperr.Error
+			if errors.As(err, &appErr) && appErr.Status == 422 {
+				return nil, err
+			}
+			return nil, apperr.Invalid(map[string]string{"email_code": "invalid or expired code"})
+		}
+		emailVerified = true
 	}
 
 	hash, err := platform.HashPassword(in.Password, s.argon)
@@ -107,12 +142,13 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput, meta Meta)
 		return nil, apperr.Internal(err)
 	}
 	user := &domain.User{
-		ID:           uuid.New(),
-		Phone:        phone,
-		Email:        in.Email,
-		PasswordHash: hash,
-		DisplayName:  in.DisplayName,
-		Role:         domain.RoleUser,
+		ID:            uuid.New(),
+		Phone:         phone,
+		Email:         email,
+		EmailVerified: emailVerified,
+		PasswordHash:  hash,
+		DisplayName:   in.DisplayName,
+		Role:          domain.RoleUser,
 	}
 	if err := s.users.Create(ctx, user); err != nil {
 		if errors.Is(err, domain.ErrConflict) {

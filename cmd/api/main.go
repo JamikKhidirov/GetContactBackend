@@ -78,12 +78,15 @@ func run() error {
 	numberRepo := postgres.NewNumberRepo(pool)
 	tokenRepo := postgres.NewTokenRepo(pool)
 	auditRepo := postgres.NewAuditRepo(pool)
+	emailRepo := postgres.NewEmailRepo(pool)
 
 	argon := platform.ArgonParams{
 		Memory: cfg.Auth.ArgonMemory, Iterations: cfg.Auth.ArgonIterations,
 		Threads: cfg.Auth.ArgonThreads, KeyLen: cfg.Auth.ArgonKeyLen,
 	}
 	authSvc := service.NewAuthService(userRepo, tokenRepo, cache, tm, cfg.Auth.RefreshTTL, argon, publisher, log)
+	emailSvc := service.NewEmailAuthService(cfg.Email, cfg.Env, userRepo, emailRepo, authSvc, log)
+	authSvc.SetEmailAuth(emailSvc)
 	userSvc := service.NewUserService(userRepo, contactRepo, numberRepo, tokenRepo, argon, log)
 	contactSvc := service.NewContactService(contactRepo, publisher, log)
 	numberSvc := service.NewNumberService(numberRepo, cache, publisher, log, cfg.Redis.CacheTTL)
@@ -94,10 +97,16 @@ func run() error {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
 	go adminSvc.ScheduleTokenCleanup(ctx, tokenRepo, 6*time.Hour)
+	// The relay turns committed outbox rows into Kafka events; a crash between
+	// the database commit and the publish can therefore never lose an email.
+	relay := service.NewOutboxRelay(emailRepo, publisher, log,
+		cfg.Email.OutboxInterval, cfg.Email.OutboxBatch, cfg.Email.OutboxMaxTries)
+	go relay.Run(ctx)
 
 	handler := httptransport.New(httptransport.Deps{
 		Config: cfg, Log: log, Version: Version,
-		Auth: authSvc, Users: userSvc, Contacts: contactSvc, Numbers: numberSvc,
+		Auth: authSvc, Email: emailSvc, Users: userSvc,
+		Contacts: contactSvc, Numbers: numberSvc,
 		Search: searchSvc, Admin: adminSvc, Tokens: tm, Cache: cache, DB: pool, Publisher: publisher,
 	})
 

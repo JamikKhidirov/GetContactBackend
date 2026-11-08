@@ -77,7 +77,7 @@ curl -s http://localhost:8080/
 Liveness. Не трогает зависимости.
 
 ```json
-{ "status": "ok", "version": "1.0.0" }
+{ "status": "ok", "version": "1.2.0" }
 ```
 
 ### `GET /readyz` 🔓
@@ -118,7 +118,8 @@ Swagger UI (ассеты встроены в бинарник, без внешн
 | `phone` | string | да | 8..15 цифр, нормализуется в `+...` |
 | `password` | string | да | 8..128, минимум одна буква и одна цифра |
 | `display_name` | string | да | 2..64 символа |
-| `email` | string | нет | валидный email, ≤254 |
+| `email` | string | нет | валидный email, ≤254; нормализуется в lower-case |
+| `email_code` | string | нет | код из письма `signup`; создаёт уже подтверждённый адрес |
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/auth/register \
@@ -140,6 +141,8 @@ curl -s -X POST http://localhost:8080/api/v1/auth/register \
       "id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44",
       "phone": "+79991234567",
       "email": "ivan@example.com",
+      "email_verified": true,
+      "email_verified_at": "2026-01-01T10:00:00Z",
       "display_name": "Ivan Petrov",
       "role": "user",
       "is_blocked": false,
@@ -169,6 +172,83 @@ curl -s -X POST http://localhost:8080/api/v1/auth/login \
 
 `200` — та же структура, что у register. `401` — неверные данные,
 `403 USER_BLOCKED` — аккаунт заблокирован, `429` — лимит.
+
+### `POST /api/v1/auth/email/code` 🔓
+
+Запрашивает одноразовый код. Назначения: `signup` (подтверждение почты при
+регистрации), `login` (вход без пароля), `verify_email` (для авторизованной
+сессии, требует `Bearer`). Ответ не раскрывает, существует ли аккаунт.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/auth/email/code \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"dzamikhidirov8@gmail.com","purpose":"login"}'
+```
+
+`202 Accepted`:
+
+```json
+{
+  "data": {
+    "sent": true,
+    "email": "dzamikhidirov8@gmail.com",
+    "purpose": "login",
+    "expires_at": "2026-01-01T10:10:00Z",
+    "expires_in": 600,
+    "resend_after_seconds": 60,
+    "dev_code": "482913"
+  }
+}
+```
+
+`dev_code` появляется только в `development` при `EMAIL_PROVIDER=log` и никогда
+не возвращается в production. Код хранится как HMAC-SHA256, а для воркера — как
+AES-GCM-шифртекст; событие доставки пишется в `email_outbox` в той же
+транзакции и публикуется в Kafka relay-процессом.
+
+Ошибки: `422` неверный email/purpose, `429` cooldown или rate limit,
+`503 EMAIL_DISABLED`.
+
+### `POST /api/v1/auth/email/login` 🔓
+
+Меняет код на пару токенов. Код одноразовый: повторная попытка → `401`.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/auth/email/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"dzamikhidirov8@gmail.com","code":"482913"}'
+```
+
+`200` — структура `AuthResult`, как у обычного login. После успешного входа
+адрес помечается подтверждённым.
+
+### `POST /api/v1/auth/email/verify` 🔑
+
+Запрашивает код подтверждения для текущего пользователя. Если `email` не
+передан, используется адрес из профиля.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/auth/email/verify \
+  -H "Authorization: Bearer $ACCESS" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"dzamikhidirov8@gmail.com"}'
+```
+
+`202` — тот же `EmailCodeResult`.
+
+### `POST /api/v1/auth/email/verify/confirm` 🔑
+
+Проверяет код и выставляет `email_verified=true`. Если адрес уже привязан к
+другому аккаунту → `409`.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/auth/email/verify/confirm \
+  -H "Authorization: Bearer $ACCESS" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"dzamikhidirov8@gmail.com","code":"482913"}'
+```
+
+`200` — обновлённый профиль, `401` — неверный/просроченный код.
 
 ### `POST /api/v1/auth/refresh` 🔓
 

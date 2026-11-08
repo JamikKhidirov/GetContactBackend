@@ -13,7 +13,8 @@
 | Защита от накрутки рейтинга | Один активный спам-репорт на пару (номер, пользователь), уникальный индекс |
 | Горизонтальное масштабирование API | Stateless-процесс, общее состояние в Postgres/Redis/Kafka |
 | Надёжная доставка событий | Kafka + consumer group + идемпотентный `audit_events` + DLQ |
-| Безопасность | argon2id, короткоживущий JWT, ротация refresh, Redis blacklist, rate limit |
+| Ни одного потерянного email | Transactional outbox (`email_outbox`) + relay + идемпотентный worker |
+| Безопасность | argon2id, короткоживущий JWT, ротация refresh, Redis blacklist, rate limit, HMAC/AES-GCM для OTP |
 | Наблюдаемость | Prometheus-метрики на каждом слое, готовый Grafana-дашборд и алерты |
 
 Ограничения демо-стенда: один брокер Kafka (RF=1), один инстанс Postgres/Redis,
@@ -33,6 +34,7 @@ flowchart TB
 
     subgraph Service["internal/service"]
         AS["AuthService"]
+        ES["EmailAuthService<br/>+ OutboxRelay"]
         US["UserService"]
         CS["ContactService"]
         NS["NumberService"]
@@ -300,6 +302,7 @@ Risky-теги: `fraud`, `scam`, `spam`, `telemarketing`, `robocall`, `моше�
 erDiagram
     users ||--o{ contacts : "owner_id"
     users ||--o{ refresh_tokens : "user_id"
+    users ||--o{ email_verifications : "user_id"
     users ||--o{ spam_reports : "reporter_id"
     users ||--o{ tags : "created_by"
     users ||--o{ number_names : "submitted_by"
@@ -313,6 +316,8 @@ erDiagram
         text password_hash
         varchar display_name
         varchar email
+        boolean email_verified
+        timestamptz email_verified_at
         varchar role
         boolean is_blocked
         timestamptz created_at
@@ -387,6 +392,29 @@ erDiagram
         timestamptz revoked_at
         timestamptz created_at
     }
+    email_verifications {
+        uuid id PK
+        varchar email
+        uuid user_id FK
+        varchar purpose
+        char code_hash
+        text code_ciphertext
+        integer attempts
+        integer delivery_attempts
+        timestamptz expires_at
+        timestamptz consumed_at
+        timestamptz delivered_at
+        timestamptz created_at
+    }
+    email_outbox {
+        uuid event_id PK
+        varchar event_type
+        varchar aggregate_id
+        jsonb payload
+        timestamptz occurred_at
+        timestamptz published_at
+        integer attempts
+    }
     audit_events {
         uuid id PK
         varchar topic
@@ -437,6 +465,9 @@ erDiagram
 | `refresh_tokens` | `(user_id) WHERE revoked_at IS NULL` | отзыв сессий |
 | `refresh_tokens` | `(user_id, last_seen_at DESC) WHERE revoked_at IS NULL` | список сессий и админ-сводка |
 | `refresh_tokens` | `(expires_at) WHERE revoked_at IS NULL` | очистка |
+| `email_verifications` | `(LOWER(email), purpose, created_at DESC)` | поиск последнего кода |
+| `email_verifications` | `(expires_at) WHERE consumed_at IS NULL` | очистка и проверка TTL |
+| `email_outbox` | `(created_at) WHERE published_at IS NULL` | pending-очередь relay |
 | `audit_events` | `(event_type, consumed_at DESC)` | аудит |
 | `audit_events` | `(aggregate_id)` | история агрегата |
 
@@ -501,6 +532,36 @@ flowchart LR
 - Ошибка обработки → сообщение уходит в DLQ, offset коммитится, метрика ошибки растёт.
 - Контракты и payload'ы — в [EVENTS.md](EVENTS.md).
 
+### Transactional outbox для email
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as API
+    participant P as PostgreSQL
+    participant R as OutboxRelay
+    participant K as Kafka
+    participant W as Worker
+    participant S as SMTP
+
+    C->>A: POST /auth/email/code
+    A->>P: BEGIN; INSERT verification + outbox; COMMIT
+    A-->>C: 202 Accepted
+    R->>P: claim pending (SKIP LOCKED, advisory lock)
+    R->>K: publish email.code_requested (acks=all)
+    K->>W: consume
+    W->>P: load ciphertext, check delivered_at
+    W->>S: send HTML + text email
+    W->>P: UPDATE delivered_at
+    W->>P: INSERT email.delivered into outbox
+```
+
+Код не попадает в Kafka и аудит: в outbox только `verification_id`. В БД лежат
+HMAC-SHA256 для проверки и AES-GCM-шифртекст для отправки. Если API падает
+между commit и publish, relay опубликует событие после рестарта; если worker
+падает после отправки, повторная доставка увидит `delivered_at` и не отправит
+письмо ещё раз.
+
 ---
 
 ## 10. Кэш, лимиты и отказоустойчивость
@@ -550,10 +611,10 @@ flowchart LR
 | Кэш карточки целиком | 1 round-trip | инвалидация по тегу/репорту; при массовых изменениях — версионирование |
 | Spam score в SQL | консистентность | тяжёлые агрегаты на больших объёмах → materialized view/worker |
 | Refresh в Postgres | аудит и отзыв | растёт таблица → periodic cleanup job |
-| Best-effort Kafka | API не зависит от брокера | возможна потеря события → outbox pattern |
+| Best-effort Kafka для общих событий | API не зависит от брокера | возможна потеря не-критичного события → outbox для критичных (email уже использует outbox) |
 | Один Kafka-брокер в demo | простота | production: 3+ брокера, RF=3, min.insync.replicas=2 |
 | StatefulSet для БД в k8s | самодостаточный стенд | production: managed Postgres/Redis/Kafka или операторы |
 
-Направления развития: outbox + Debezium, OpenTelemetry-трейсинг, кэш тегов,
+Направления развития: Debezium CDC для outbox, OpenTelemetry-трейсинг, кэш тегов,
 гео-справочник операторов, верификация номеров через SMS, экспорт метрик в
 VictoriaMetrics, e2e-тесты в CI с testcontainers.

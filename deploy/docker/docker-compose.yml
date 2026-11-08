@@ -17,6 +17,27 @@ x-api-env: &api-env
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_AUTH_RPM: "100"
   RATE_LIMIT_PUBLIC_RPM: "600"
+  EMAIL_ENABLED: "true"
+  EMAIL_PROVIDER: "${EMAIL_PROVIDER:-log}"
+  EMAIL_FROM_NAME: "GetContact"
+  EMAIL_FROM_ADDRESS: "${EMAIL_FROM_ADDRESS:-no-reply@getcontact.local}"
+  EMAIL_SUPPORT_ADDRESS: "${EMAIL_SUPPORT_ADDRESS:-support@getcontact.local}"
+  EMAIL_BRAND_NAME: "GetContact"
+  EMAIL_CODE_TTL: "10m"
+  EMAIL_CODE_LENGTH: "6"
+  EMAIL_CODE_MAX_ATTEMPTS: "5"
+  EMAIL_CODE_COOLDOWN: "2s"
+  EMAIL_CODE_SECRET: "${EMAIL_CODE_SECRET:-dev-email-code-secret-change-me-please}"
+  EMAIL_DEV_ECHO: "${EMAIL_DEV_ECHO:-true}"
+  EMAIL_OUTBOX_INTERVAL: "1s"
+  EMAIL_OUTBOX_BATCH: "50"
+  EMAIL_OUTBOX_MAX_ATTEMPTS: "25"
+  SMTP_HOST: "${SMTP_HOST:-}"
+  SMTP_PORT: "${SMTP_PORT:-587}"
+  SMTP_USERNAME: "${SMTP_USERNAME:-}"
+  SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+  SMTP_TLS: "${SMTP_TLS:-true}"
+  SMTP_TIMEOUT: "10s"
 
 services:
   postgres:
@@ -116,7 +137,7 @@ services:
       dockerfile: deploy/docker/Dockerfile
       target: api
       args:
-        VERSION: 1.1.0
+        VERSION: 1.2.0
     container_name: gc-api
     depends_on:
       postgres:
@@ -142,7 +163,7 @@ services:
       dockerfile: deploy/docker/Dockerfile
       target: worker
       args:
-        VERSION: 1.1.0
+        VERSION: 1.2.0
     container_name: gc-worker
     depends_on:
       postgres:

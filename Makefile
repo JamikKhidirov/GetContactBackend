@@ -5,7 +5,7 @@ SHELL      := /bin/sh
 GO         ?= go
 COMPOSE    ?= docker compose -f deploy/docker/docker-compose.yml
 API_URL    ?= http://localhost:8080
-IMAGE_TAG  ?= 1.0.0
+IMAGE_TAG  ?= 1.2.0
 REGISTRY   ?= ghcr.io/your-org
 
 .DEFAULT_GOAL := help
