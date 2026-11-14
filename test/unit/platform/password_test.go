@@ -1,6 +1,7 @@
 package platform_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/getcontact/backend/internal/platform"
@@ -26,6 +27,20 @@ func TestPasswordHashAndVerify(t *testing.T) {
 	}
 	if _, err := platform.HashPassword("short", params); err == nil {
 		t.Fatal("short password accepted")
+	}
+}
+
+func TestPasswordPolicyCountsRunes(t *testing.T) {
+	// Eight Cyrillic runes are 16 bytes; the byte-based check used to accept
+	// this while claiming a minimum of eight characters.
+	if err := platform.ValidatePassword("Пароль12"); err != nil {
+		t.Fatalf("valid unicode password rejected: %v", err)
+	}
+	if err := platform.ValidatePassword("Пар1"); err == nil {
+		t.Fatal("short unicode password accepted")
+	}
+	if err := platform.ValidatePassword(strings.Repeat("а", 129) + "1"); err == nil {
+		t.Fatal("too many runes accepted")
 	}
 }
 

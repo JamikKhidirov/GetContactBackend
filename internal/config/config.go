@@ -34,6 +34,9 @@ type HTTPConfig struct {
 	ShutdownTimeout time.Duration
 	RequestTimeout  time.Duration
 	MetricsAddr     string
+	// TrustedProxies is a list of proxy CIDRs whose X-Forwarded-For and
+	// X-Real-IP headers are honoured. Empty means trust r.RemoteAddr only.
+	TrustedProxies []string
 }
 
 type DBConfig struct {
@@ -130,6 +133,7 @@ func Load() (*Config, error) {
 			ShutdownTimeout: envDuration("HTTP_SHUTDOWN_TIMEOUT", 20*time.Second),
 			RequestTimeout:  envDuration("HTTP_REQUEST_TIMEOUT", 20*time.Second),
 			MetricsAddr:     env("METRICS_ADDR", ":8081"),
+			TrustedProxies:  split(env("TRUSTED_PROXIES", "")),
 		},
 		DB: DBConfig{
 			DSN:             env("DATABASE_URL", "postgres://getcontact:getcontact@localhost:5432/getcontact?sslmode=disable"),
@@ -153,7 +157,7 @@ func Load() (*Config, error) {
 			Enabled: envBool("KAFKA_ENABLED", true),
 		},
 		Auth: AuthConfig{
-			JWTSecret:       env("JWT_SECRET", "change-me-in-production-at-least-32-chars"),
+			JWTSecret:       env("JWT_SECRET", "dev-only-change-me-at-least-32-characters"),
 			Issuer:          env("JWT_ISSUER", "getcontact"),
 			AccessTTL:       envDuration("JWT_ACCESS_TTL", 15*time.Minute),
 			RefreshTTL:      envDuration("JWT_REFRESH_TTL", 30*24*time.Hour),
@@ -189,7 +193,7 @@ func Load() (*Config, error) {
 		CORS: CORSConfig{
 			AllowedOrigins: split(env("CORS_ALLOWED_ORIGINS", "*")),
 			AllowedMethods: split(env("CORS_ALLOWED_METHODS", "GET,POST,PATCH,PUT,DELETE,OPTIONS")),
-			AllowedHeaders: split(env("CORS_ALLOWED_HEADERS", "Accept,Authorization,Content-Type,X-Request-Id,X-Device-Id,X-Device-Name,X-Device-Model,X-Device-Manufacturer,X-OS,X-OS-Version,X-App-Version,X-App-Build,X-Client,X-Locale,X-Timezone,X-Network-Type,X-Forwarded-For,X-Real-IP")),
+			AllowedHeaders: split(env("CORS_ALLOWED_HEADERS", "Accept,Authorization,Content-Type,X-Request-Id,X-Device-Id,X-Device-Name,X-Device-Model,X-Device-Manufacturer,X-OS,X-OS-Version,X-App-Version,X-App-Build,X-Client,X-Locale,X-Timezone,X-Network-Type")),
 		},
 		Rate: RateConfig{
 			Enabled:   envBool("RATE_LIMIT_ENABLED", true),
@@ -217,13 +221,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("EMAIL_CODE_TTL and EMAIL_CODE_MAX_ATTEMPTS must be positive")
 	}
 	if c.IsProduction() {
+		// Never accept a shipped placeholder as a signing key: the default value
+		// is public, so anyone could mint admin tokens with it.
+		if len(c.Auth.JWTSecret) < 32 || isPlaceholderSecret(c.Auth.JWTSecret) {
+			return nil, fmt.Errorf("JWT_SECRET must be an explicitly configured random value of at least 32 characters in production")
+		}
+		if c.Admin.Phone != "" {
+			if len(c.Admin.Password) < 12 || isPlaceholderSecret(c.Admin.Password) {
+				return nil, fmt.Errorf("ADMIN_PASSWORD must be set to a strong, non-placeholder value (12+ characters) in production")
+			}
+		}
 		// Never leak a code in an API response or fall back to a transport that
 		// silently drops mail in production.
 		c.Email.DevEcho = false
 		if c.Email.Enabled && !strings.EqualFold(c.Email.Provider, "smtp") {
 			return nil, fmt.Errorf("EMAIL_PROVIDER must be smtp in production")
 		}
-		if strings.Contains(c.Email.Secret, "change-me") || len(c.Email.Secret) < 32 {
+		if isPlaceholderSecret(c.Email.Secret) || len(c.Email.Secret) < 32 {
 			return nil, fmt.Errorf("EMAIL_CODE_SECRET must be a unique value of at least 32 characters in production")
 		}
 	}
@@ -235,6 +249,15 @@ func Load() (*Config, error) {
 
 // IsProduction reports whether the service runs with production hardening.
 func (c *Config) IsProduction() bool { return strings.EqualFold(c.Env, "production") }
+
+// isPlaceholderSecret rejects values copied from examples and manifests. The
+// length check alone would accept a publicly known 40-character placeholder.
+func isPlaceholderSecret(s string) bool {
+	l := strings.ToLower(strings.TrimSpace(s))
+	return strings.Contains(l, "change-me") || strings.Contains(l, "change_me") ||
+		strings.Contains(l, "changeme") || strings.Contains(l, "dev-only") ||
+		strings.Contains(l, "placeholder")
+}
 
 func env(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != "" {

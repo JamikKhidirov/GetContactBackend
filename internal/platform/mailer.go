@@ -175,9 +175,10 @@ func (m *SMTPMailer) Send(ctx context.Context, msg MailMessage) error {
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("smtp close body: %w", err)
 	}
-	if err := client.Quit(); err != nil {
-		return fmt.Errorf("smtp quit: %w", err)
-	}
+	// The server has accepted the message. A failed QUIT must not turn a
+	// delivered email into an error, otherwise the caller retries and sends a
+	// duplicate. The deferred Close tears the connection down anyway.
+	_ = client.Quit()
 	return nil
 }
 

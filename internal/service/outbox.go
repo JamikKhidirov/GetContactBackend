@@ -118,7 +118,7 @@ func (r *OutboxRelay) RunOnce(ctx context.Context) {
 }
 
 func (r *OutboxRelay) refreshBacklog(ctx context.Context) {
-	n, err := r.repo.OutboxBacklog(ctx)
+	n, err := r.repo.OutboxBacklog(ctx, r.maxAttempts)
 	if err != nil {
 		return
 	}

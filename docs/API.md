@@ -48,6 +48,8 @@
 | 422 | `VALIDATION_ERROR` | поля не прошли валидацию |
 | 429 | `RATE_LIMITED` | превышен лимит |
 | 500 | `INTERNAL_ERROR` | внутренняя ошибка |
+| 503 | `EMAIL_DISABLED` | email-аутентификация выключена |
+| 503 | `AUTH_UNAVAILABLE` | Redis недоступен, безопасная проверка токена невозможна |
 | 504 | `REQUEST_TIMEOUT` | обработка превысила `HTTP_REQUEST_TIMEOUT` |
 
 ### Заголовки
@@ -59,6 +61,18 @@
 | `X-RateLimit-Limit` | ← | лимит окна |
 | `X-RateLimit-Remaining` | ← | остаток |
 | `Retry-After` | ← | секунды до сброса (429) |
+
+### Токены и отзыв
+
+Access-токен — JWT HS256 с claim `ver` (версия токена) и `sid` (сессия).
+На каждом запросе API перечитывает пользователя и сравнивает `ver` с
+`users.token_version`, поэтому блокировка, смена пароля и смена роли
+инвалидируют уже выданные access-токены, не дожидаясь истечения TTL.
+Refresh-токен одноразовый: ротация выполняется атомарно
+(`UPDATE ... RETURNING`), параллельный повтор получает `401`.
+
+`X-Forwarded-For` и `X-Real-IP` учитываются только если непосредственный
+peer входит в `TRUSTED_PROXIES`; иначе используется `RemoteAddr`.
 
 ---
 
@@ -83,7 +97,8 @@ Liveness. Не трогает зависимости.
 ### `GET /readyz` 🔓
 
 Readiness. Проверяет Postgres, Redis и (если включён) Kafka.
-`200` — все `up`, `503` — хотя бы одна зависимость `down`.
+`200` — все `up`, `503` — хотя бы одна зависимость `down`. Наружу отдаётся
+только `"error":"unavailable"`; подробности пишутся в лог.
 
 ```bash
 curl -s -i http://localhost:8080/readyz
@@ -116,7 +131,7 @@ Swagger UI (ассеты встроены в бинарник, без внешн
 | Поле | Тип | Обязательно | Правила |
 |---|---|---|---|
 | `phone` | string | да | 8..15 цифр, нормализуется в `+...` |
-| `password` | string | да | 8..128, минимум одна буква и одна цифра |
+| `password` | string | да | 8..128 Unicode-символов (рун), минимум одна буква и одна цифра |
 | `display_name` | string | да | 2..64 символа |
 | `email` | string | нет | валидный email, ≤254; нормализуется в lower-case |
 | `email_code` | string | нет | код из письма `signup`; создаёт уже подтверждённый адрес |
@@ -141,8 +156,7 @@ curl -s -X POST http://localhost:8080/api/v1/auth/register \
       "id": "0c3f7f1e-2f4e-4c1e-9a51-2f9b7c1d8e44",
       "phone": "+79991234567",
       "email": "ivan@example.com",
-      "email_verified": true,
-      "email_verified_at": "2026-01-01T10:00:00Z",
+      "email_verified": false,
       "display_name": "Ivan Petrov",
       "role": "user",
       "is_blocked": false,
@@ -173,11 +187,15 @@ curl -s -X POST http://localhost:8080/api/v1/auth/login \
 `200` — та же структура, что у register. `401` — неверные данные,
 `403 USER_BLOCKED` — аккаунт заблокирован, `429` — лимит.
 
-### `POST /api/v1/auth/email/code` 🔓
+### `POST /api/v1/auth/email/code` 🔓 / 🔑
 
 Запрашивает одноразовый код. Назначения: `signup` (подтверждение почты при
 регистрации), `login` (вход без пароля), `verify_email` (для авторизованной
 сессии, требует `Bearer`). Ответ не раскрывает, существует ли аккаунт.
+
+Cooldown (`resend_after_seconds`) применяется к каждому адресу и назначению,
+включая несуществующие адреса, чтобы нельзя было использовать ответ как oracle
+существования аккаунта.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/auth/email/code \
@@ -206,8 +224,8 @@ curl -s -X POST http://localhost:8080/api/v1/auth/email/code \
 AES-GCM-шифртекст; событие доставки пишется в `email_outbox` в той же
 транзакции и публикуется в Kafka relay-процессом.
 
-Ошибки: `422` неверный email/purpose, `429` cooldown или rate limit,
-`503 EMAIL_DISABLED`.
+Ошибки: `401` для `verify_email` без токена, `422` неверный email/purpose,
+`429` cooldown или rate limit, `503 EMAIL_DISABLED`.
 
 ### `POST /api/v1/auth/email/login` 🔓
 
@@ -261,10 +279,25 @@ curl -s -X POST http://localhost:8080/api/v1/auth/refresh \
 ```
 
 `200` — новая пара. Повторное использование старого → `401 UNAUTHORIZED`.
+Ротация атомарная: при параллельных запросах выигрывает только один.
+
+### `POST /api/v1/auth/logout/all` 🔑
+
+Завершает все сессии аккаунта: отзывает все refresh-токены и блокирует
+связанные access-токены через Redis denylist.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/auth/logout/all \
+  -H "Authorization: Bearer $ACCESS"
+```
+
+`204 No Content`.
 
 ### `POST /api/v1/auth/logout` 🔑
 
 Отзывает refresh (если передан) и заносит текущий access JTI в Redis blacklist.
+Refresh-токен отзывается только в том случае, если он принадлежит вызывающему
+пользователю.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/auth/logout \
@@ -381,8 +414,9 @@ curl -s -X POST http://localhost:8080/api/v1/auth/login \
 }
 ```
 
-IP берётся из `X-Forwarded-For` (первый валидный адрес) или `X-Real-IP`, затем
-из `RemoteAddr`. Значения обрезаются до безопасной длины.
+IP берётся из `X-Forwarded-For` (первый валидный адрес) или `X-Real-IP`, но
+только если непосредственный peer входит в `TRUSTED_PROXIES`; иначе используется
+`RemoteAddr`. Значения обрезаются до безопасной длины.
 
 ---
 
@@ -390,8 +424,10 @@ IP берётся из `X-Forwarded-For` (первый валидный адре
 
 ### `GET /api/v1/users/{id}` 🔑
 
-Публичный профиль. Если это не текущий пользователь, телефон маскируется
-(`*******4567`), email скрывается.
+Публичный профиль. Для чужого аккаунта возвращается только `id`,
+`display_name` и маскированный телефон; email, роль, `is_blocked` и флаги
+подтверждения не раскрываются. Свой профиль и профиль для admin возвращаются
+полностью.
 
 ```bash
 curl -s http://localhost:8080/api/v1/users/$USER_ID -H "Authorization: Bearer $ACCESS"
@@ -417,7 +453,8 @@ curl -s -X PATCH http://localhost:8080/api/v1/users/me \
 { "current_password": "Passw0rd123", "new_password": "NewPassw0rd456" }
 ```
 
-`204` — пароль изменён, все refresh-сессии отозваны. `401` — неверный текущий пароль.
+`204` — пароль изменён. Все refresh-сессии отозваны, а уже выданные
+access-токены инвалидированы через `token_version`. `401` — неверный текущий пароль.
 
 ### `GET /api/v1/users/me/stats` 🔑
 
@@ -812,6 +849,12 @@ audit-события по его `user_id`.
 
 Только чтение: активные сессии любого пользователя в том же формате, что и
 `GET /api/v1/auth/sessions` (без флага `current`).
+
+### `DELETE /api/v1/admin/users/{id}/sessions` 👑
+
+Завершает все сессии пользователя и блокирует связанные access-токены.
+Возвращает `{"data":{"user_id":"...","revoked":N}}`. Нельзя применить к
+собственному аккаунту администратора (`400`).
 
 ---
 

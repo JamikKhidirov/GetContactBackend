@@ -139,9 +139,12 @@ sequenceDiagram
 - **Метрики** считаются по route-шаблону (`/api/v1/numbers/{phone}`), а не по сырому URL,
   поэтому кардинальность ограничена.
 - **Rate limit** — Redis fixed window. Ключ включает IP и bucket (`auth`/`public`).
-  При ошибке Redis лимитер пропускает запрос (fail-open) и инкрементирует метрику ошибки.
-- **Аутентификация**: публичные маршруты не требуют токен, но `RequireAuth`/`RequireAdmin`
-  стоят на защищённых. Для lookup токен опционален.
+  При ошибке Redis лимитер пропускает запрос (fail-open); denylist при обязательной
+  аутентификации, наоборот, fail-closed.
+- **Аутентификация**: публичные маршруты не требуют токен, но `authenticate`/
+  `requireAdmin` стоят на защищённых. Для lookup токен опционален.
+- **IP клиента** берётся из `RemoteAddr`; `X-Forwarded-For`/`X-Real-IP`
+  учитываются только если peer входит в `TRUSTED_PROXIES` (CIDR или IP).
 
 ### Маппинг ошибок
 
@@ -193,19 +196,24 @@ sequenceDiagram
 
     C->>A: POST /auth/refresh {refresh}
     A->>A: sha256(refresh)
-    A->>P: SELECT ... FOR UPDATE WHERE token_hash
-    alt revoked / expired
+    A->>P: UPDATE refresh_tokens SET revoked_at=now()
+    Note right of A: WHERE hash AND not revoked<br/>RETURNING row (atomic single-use)
+    alt no row (revoked / expired / replayed)
         A-->>C: 401
     else valid
-        A->>P: UPDATE revoked_at = now()
         A->>P: INSERT new refresh
         A-->>C: 200 new pair
     end
 
     C->>A: POST /auth/logout {refresh}
-    A->>P: revoke refresh
+    A->>P: revoke refresh only if owner = caller
     A->>R: SET auth:deny:{jti} TTL=exp-now
     A->>R: SET auth:sid:deny:{sid} TTL=access-ttl
+    A-->>C: 204
+
+    C->>A: POST /auth/logout/all
+    A->>P: SELECT active sessions + revoke all
+    A->>R: SET auth:sid:deny:{sid} for every session
     A-->>C: 204
 
     C->>A: GET /auth/sessions
@@ -223,29 +231,36 @@ sequenceDiagram
 
 - **Пароль**: argon2id, параметры по умолчанию 64 MiB / 3 итерации / 2 потока,
   PHC-строка `$argon2id$v=19$m=65536,t=3,p=2$...`. Проверка — constant-time.
-- **Access JWT**: HS256, claims `sub`, `role`, `iss`, `iat`, `exp`, `jti`, `sid`.
-  TTL 15 минут. При каждом запросе проверяется подпись, срок, JWT denylist и
-  session denylist (если `sid` отозван).
+  Политика 8..128 символов считается в Unicode-рунах; буква/цифра — Unicode-классы.
+- **Access JWT**: HS256, claims `sub`, `role`, `iss`, `iat`, `exp`, `jti`, `sid`, `ver`.
+  TTL 15 минут. При каждом запросе проверяются подпись, срок, JWT denylist,
+  session denylist, актуальный `users.token_version` и `is_blocked`.
 - **Refresh**: 32 случайных байта (base64url), в БД только SHA-256. Одноразовый:
-  при ротации старый помечается `revoked_at`, повторное использование → 401.
+  ротация — атомарный `UPDATE ... RETURNING`, поэтому параллельный повтор → 401.
 - **Сессии**: одна запись `refresh_tokens` = одно устройство. При login/refresh
   сохраняются только явно переданные клиентом поля (`X-Device-*`, `X-OS-*`,
-  `X-App-*`, `device` в JSON), IP из proxy-aware разбора и User-Agent.
-- **Logout**: access JTI и `sid` попадают в Redis с TTL до истечения токена;
-  refresh отзывается.
-- **Блокировка**: `SetBlocked` + `RevokeAllForUser`; middleware отклоняет заблокированных
-  с `403 USER_BLOCKED`, логин тоже возвращает 403.
-- **Смена пароля**: проверяет текущий пароль, обновляет хэш и отзывает все refresh.
+  `X-App-*`, `device` в JSON), IP из trusted-proxy разбора и User-Agent.
+- **Logout**: refresh отзывается только у владельца; access JTI и `sid` попадают
+  в Redis с TTL до истечения токена. `logout/all` завершает все устройства.
+- **Блокировка**: `SetBlocked` бампает `token_version` и вызывает
+  `RevokeAllForUser`; middleware отклоняет заблокированных с `403 USER_BLOCKED`.
+- **Смена пароля**: проверяет текущий пароль, обновляет хэш (бампает
+  `token_version`) и отзывает все refresh-сессии.
+- **Смена роли**: бампает `token_version`, поэтому старый access-токен не сохранит
+  прежнюю роль.
 
 ### Rate limiting
 
 | Bucket | Маршруты | Лимит по умолчанию |
 |---|---|---|
-| `auth` | `/auth/register`, `/auth/login`, `/auth/refresh` | 20/мин на IP |
-| `public` | остальные, включая lookup | 120/мин на IP |
+| `auth` | `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/email/*` | 20/мин на IP |
+| `public` | публичные чтения, включая lookup | 120/мин на IP |
+| `user` | аутентифицированные маршруты | 120/мин на IP |
 
 Окно — `RATE_LIMIT_WINDOW` (1 минута). Заголовки ответа:
 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After` при 429.
+Переопределения: `RATE_LIMIT_ENABLED`, `RATE_LIMIT_PUBLIC_RPM`,
+`RATE_LIMIT_AUTH_RPM`, `RATE_LIMIT_WINDOW`.
 
 ---
 
@@ -320,6 +335,7 @@ erDiagram
         timestamptz email_verified_at
         varchar role
         boolean is_blocked
+        integer token_version
         timestamptz created_at
         timestamptz updated_at
     }

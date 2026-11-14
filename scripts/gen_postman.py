@@ -342,6 +342,17 @@ collection = {
                     ),
                 ),
                 make_request(
+                    "Logout all devices",
+                    "POST",
+                    "/api/v1/auth/logout/all",
+                    tests=[
+                        "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                        "pm.collectionVariables.set('accessToken', '');",
+                        "pm.collectionVariables.set('refreshToken', '');",
+                    ],
+                    description="Завершает все сессии аккаунта и блокирует связанные access-токены.",
+                ),
+                make_request(
                     "Logout",
                     "POST",
                     "/api/v1/auth/logout",
@@ -558,6 +569,18 @@ collection = {
                     "/api/v1/admin/users/{{userId}}/sessions",
                     auth="admin",
                     description="Активные устройства пользователя: IP, модель, ОС и версия приложения.",
+                ),
+                make_request(
+                    "Revoke all user sessions",
+                    "DELETE",
+                    "/api/v1/admin/users/{{userId}}/sessions",
+                    auth="admin",
+                    tests=[
+                        "const json = pm.response.json();",
+                        "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                        "pm.test('revoked count present', () => pm.expect(json.data.revoked).to.be.a('number'));",
+                    ],
+                    description="Завершает все сессии выбранного пользователя. Нельзя применить к себе.",
                 ),
                 make_request(
                     "Spam report queue",

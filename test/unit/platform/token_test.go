@@ -47,6 +47,18 @@ func TestTokenIssueAndParse(t *testing.T) {
 		t.Fatalf("session id %q, want %q", boundClaims.SessionID, sessionID.String())
 	}
 
+	versioned, _, _, err := tm.IssueWithSessionVersion(uid, domain.RoleUser, sessionID, 7)
+	if err != nil {
+		t.Fatalf("issue with version: %v", err)
+	}
+	versionedClaims, err := tm.Parse(versioned)
+	if err != nil {
+		t.Fatalf("parse versioned token: %v", err)
+	}
+	if versionedClaims.TokenVersion != 7 {
+		t.Fatalf("token version %d, want 7", versionedClaims.TokenVersion)
+	}
+
 	other, _ := platform.NewTokenManager("ffffffffffffffffffffffffffffffff", "test-issuer", time.Minute)
 	if _, err := other.Parse(token); err == nil {
 		t.Fatal("token accepted with a different secret")

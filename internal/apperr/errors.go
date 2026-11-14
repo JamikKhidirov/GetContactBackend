@@ -65,6 +65,16 @@ func Forbidden(message string) *Error {
 	return New(http.StatusForbidden, "FORBIDDEN", message)
 }
 
+// Blocked reports a blocked account with its own stable machine code.
+func Blocked() *Error {
+	return New(http.StatusForbidden, "USER_BLOCKED", "user is blocked")
+}
+
+// ServiceUnavailable reports a dependency that cannot be checked safely.
+func ServiceUnavailable(code, message string) *Error {
+	return New(http.StatusServiceUnavailable, code, message)
+}
+
 // NotFound reports a missing resource.
 func NotFound(resource string) *Error {
 	return New(http.StatusNotFound, "NOT_FOUND", resource+" not found")
@@ -113,7 +123,7 @@ func From(err error) *Error {
 	case errors.Is(err, domain.ErrForbidden):
 		return Forbidden("")
 	case errors.Is(err, domain.ErrBlocked):
-		return Forbidden("user is blocked")
+		return Blocked()
 	case errors.Is(err, domain.ErrInvalidToken):
 		return Unauthorized("invalid or expired token")
 	default:

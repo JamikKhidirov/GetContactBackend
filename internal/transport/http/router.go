@@ -4,12 +4,14 @@ import (
 	"context"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/getcontact/backend/api"
 	"github.com/getcontact/backend/internal/apperr"
 	"github.com/getcontact/backend/internal/config"
+	"github.com/getcontact/backend/internal/domain"
 	"github.com/getcontact/backend/internal/events"
 	"github.com/getcontact/backend/internal/platform"
 	rediscache "github.com/getcontact/backend/internal/repository/redis"
@@ -28,6 +30,7 @@ type Deps struct {
 	Auth      *service.AuthService
 	Email     *service.EmailAuthService
 	Users     *service.UserService
+	UserRepo  domain.UserRepository
 	Contacts  *service.ContactService
 	Numbers   *service.NumberService
 	Search    *service.SearchService
@@ -46,6 +49,7 @@ type API struct {
 	auth      *service.AuthService
 	email     *service.EmailAuthService
 	users     *service.UserService
+	userRepo  domain.UserRepository
 	contacts  *service.ContactService
 	numbers   *service.NumberService
 	searchSvc *service.SearchService
@@ -54,25 +58,29 @@ type API struct {
 	cache     *rediscache.Cache
 	db        *pgxpool.Pool
 	pub       events.Publisher
+	trusted   []*net.IPNet
 }
 
 // New builds the fully wired HTTP handler.
 func New(d Deps) http.Handler {
 	a := &API{
 		cfg: d.Config, log: d.Log, version: d.Version,
-		auth: d.Auth, email: d.Email, users: d.Users, contacts: d.Contacts, numbers: d.Numbers,
+		auth: d.Auth, email: d.Email, users: d.Users, userRepo: d.UserRepo,
+		contacts: d.Contacts, numbers: d.Numbers,
 		searchSvc: d.Search, admin: d.Admin, tokens: d.Tokens, cache: d.Cache,
 		db: d.DB, pub: d.Publisher,
+		trusted: parseTrustedProxies(d.Config.HTTP.TrustedProxies),
 	}
 
 	r := chi.NewRouter()
+	// RequestID is outermost; recoverer wraps every other middleware so a panic
+	// in CORS, observability or the limiter still yields the JSON 500 envelope.
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	r.Use(a.recoverer)
 	r.Use(a.securityHeaders)
 	r.Use(a.cors)
 	r.Use(a.requestTimeout)
 	r.Use(a.observability)
-	r.Use(a.recoverer)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, a.log, apperr.NotFound("endpoint"))
@@ -124,6 +132,7 @@ func New(d Deps) http.Handler {
 			r.Use(a.rateLimit("user", a.cfg.Rate.PublicRPM))
 
 			r.Post("/auth/logout", a.logout)
+			r.Post("/auth/logout/all", a.logoutAll)
 			r.Get("/auth/me", a.me)
 			r.Get("/auth/sessions", a.listSessions)
 			r.Delete("/auth/sessions/{sessionID}", a.revokeSession)
@@ -160,6 +169,7 @@ func New(d Deps) http.Handler {
 				r.Get("/users/{id}", a.adminGetUser)
 				r.Get("/users/{id}/summary", a.adminUserSummary)
 				r.Get("/users/{id}/sessions", a.adminUserSessions)
+				r.Delete("/users/{id}/sessions", a.adminRevokeUserSessions)
 				r.Patch("/users/{id}/block", a.adminSetBlocked)
 				r.Delete("/users/{id}", a.adminDeleteUser)
 				r.Get("/reports", a.adminListReports)
@@ -213,7 +223,8 @@ func (a *API) readyz(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	if err := a.db.Ping(ctx); err != nil {
-		checks["postgres"] = checkResult{Status: "down", LatencyMS: time.Since(start).Milliseconds(), Error: err.Error()}
+		a.log.Warn("readiness: postgres ping failed", "error", err)
+		checks["postgres"] = checkResult{Status: "down", LatencyMS: time.Since(start).Milliseconds(), Error: "unavailable"}
 		healthy = false
 	} else {
 		checks["postgres"] = checkResult{Status: "up", LatencyMS: time.Since(start).Milliseconds()}
@@ -221,7 +232,8 @@ func (a *API) readyz(w http.ResponseWriter, r *http.Request) {
 
 	start = time.Now()
 	if err := a.cache.Ping(ctx); err != nil {
-		checks["redis"] = checkResult{Status: "down", LatencyMS: time.Since(start).Milliseconds(), Error: err.Error()}
+		a.log.Warn("readiness: redis ping failed", "error", err)
+		checks["redis"] = checkResult{Status: "down", LatencyMS: time.Since(start).Milliseconds(), Error: "unavailable"}
 		healthy = false
 	} else {
 		checks["redis"] = checkResult{Status: "up", LatencyMS: time.Since(start).Milliseconds()}
@@ -230,7 +242,8 @@ func (a *API) readyz(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.Kafka.Enabled {
 		start = time.Now()
 		if err := a.pub.Ping(ctx); err != nil {
-			checks["kafka"] = checkResult{Status: "down", LatencyMS: time.Since(start).Milliseconds(), Error: err.Error()}
+			a.log.Warn("readiness: kafka ping failed", "error", err)
+			checks["kafka"] = checkResult{Status: "down", LatencyMS: time.Since(start).Milliseconds(), Error: "unavailable"}
 			healthy = false
 		} else {
 			checks["kafka"] = checkResult{Status: "up", LatencyMS: time.Since(start).Milliseconds()}

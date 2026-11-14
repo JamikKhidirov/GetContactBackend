@@ -77,6 +77,9 @@ type NumberRepository interface {
 type TokenRepository interface {
 	Create(ctx context.Context, t *RefreshToken) error
 	GetByHash(ctx context.Context, hash string) (*RefreshToken, error)
+	// ConsumeForRotation atomically revokes a refresh token and returns it.
+	// Only the first concurrent rotation can win, which prevents replay.
+	ConsumeForRotation(ctx context.Context, hash string) (*RefreshToken, error)
 	Revoke(ctx context.Context, id uuid.UUID) error
 	RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
 	RevokeForUser(ctx context.Context, id, userID uuid.UUID) error
@@ -120,7 +123,9 @@ type EmailRepository interface {
 	ClaimOutbox(ctx context.Context, limit, maxAttempts int) ([]OutboxMessage, error)
 	MarkOutboxPublished(ctx context.Context, eventID uuid.UUID) error
 	MarkOutboxFailed(ctx context.Context, eventID uuid.UUID, reason string) error
-	OutboxBacklog(ctx context.Context) (int64, error)
+	// OutboxBacklog counts messages that can still be published; rows that
+	// exhausted their retry budget are excluded.
+	OutboxBacklog(ctx context.Context, maxAttempts int) (int64, error)
 	// AcquireOutboxLock prevents two relay instances from double-publishing.
 	// It returns a release function and false when another relay holds the lock.
 	AcquireOutboxLock(ctx context.Context) (release func(), acquired bool, err error)

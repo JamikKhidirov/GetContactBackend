@@ -22,6 +22,26 @@ data:
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_PUBLIC_RPM: "120"
   RATE_LIMIT_AUTH_RPM: "20"
+  # Comma-separated CIDRs of your ingress/LB. Leave empty to trust RemoteAddr.
+  TRUSTED_PROXIES: ""
+  # Email OTP. Production refuses EMAIL_PROVIDER=log, so SMTP is required and
+  # the API will not start until SMTP_HOST/SMTP_USERNAME are real and
+  # SMTP_PASSWORD/EMAIL_CODE_SECRET are set in the Secret below.
+  EMAIL_ENABLED: "true"
+  EMAIL_PROVIDER: smtp
+  EMAIL_FROM_NAME: GetContact
+  EMAIL_FROM_ADDRESS: "no-reply@getcontact.local"
+  EMAIL_SUPPORT_ADDRESS: "support@getcontact.local"
+  EMAIL_CODE_TTL: 10m
+  EMAIL_CODE_MAX_ATTEMPTS: "5"
+  EMAIL_CODE_COOLDOWN: 60s
+  EMAIL_OUTBOX_INTERVAL: 1s
+  EMAIL_OUTBOX_BATCH: "50"
+  SMTP_HOST: smtp.gmail.com
+  SMTP_PORT: "587"
+  SMTP_USERNAME: "no-reply@getcontact.local"
+  SMTP_TLS: "true"
+  SMTP_TIMEOUT: 10s
   ADMIN_PHONE: "+79990000000"
   ADMIN_NAME: Platform Admin
   DB_MAX_CONNS: "25"
@@ -42,4 +62,6 @@ stringData:
   POSTGRES_PASSWORD: "CHANGE_ME_postgres"
   DATABASE_URL: "postgres://getcontact:CHANGE_ME_postgres@postgres:5432/getcontact?sslmode=disable"
   JWT_SECRET: "CHANGE_ME_2f8c1a7e4b9d6f3a0c5e8b2d7f4a1c9e"
-  ADMIN_PASSWORD: "Admin12345"
+  EMAIL_CODE_SECRET: "CHANGE_ME_email_code_secret_32_chars_minimum"
+  SMTP_PASSWORD: "CHANGE_ME_gmail_app_password"
+  ADMIN_PASSWORD: "CHANGE_ME_admin_password_12_chars"

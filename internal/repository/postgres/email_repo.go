@@ -239,11 +239,17 @@ func (r *EmailRepo) MarkOutboxFailed(ctx context.Context, eventID uuid.UUID, rea
 	return err
 }
 
-// OutboxBacklog reports how many events still need publishing.
-func (r *EmailRepo) OutboxBacklog(ctx context.Context) (int64, error) {
+// OutboxBacklog reports how many events can still be published. Rows that have
+// exhausted their retry budget are excluded so a poisoned payload does not make
+// the backlog metric grow forever.
+func (r *EmailRepo) OutboxBacklog(ctx context.Context, maxAttempts int) (int64, error) {
 	defer observe("email.outbox_backlog", time.Now())
+	if maxAttempts <= 0 {
+		maxAttempts = 25
+	}
 	var n int64
-	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM email_outbox WHERE published_at IS NULL`).Scan(&n)
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM email_outbox
+		WHERE published_at IS NULL AND attempts < $1`, maxAttempts).Scan(&n)
 	return n, err
 }
 

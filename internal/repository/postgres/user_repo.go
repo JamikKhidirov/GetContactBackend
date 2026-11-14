@@ -17,13 +17,13 @@ type UserRepo struct{ db *pgxpool.Pool }
 // NewUserRepo builds a user repository.
 func NewUserRepo(db *pgxpool.Pool) *UserRepo { return &UserRepo{db: db} }
 
-const userColumns = `id, phone, COALESCE(email, ''), email_verified, email_verified_at, password_hash, display_name, role, is_blocked, created_at, updated_at`
+const userColumns = `id, phone, COALESCE(email, ''), email_verified, email_verified_at, password_hash, token_version, display_name, role, is_blocked, created_at, updated_at`
 
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
 	var role string
 	if err := row.Scan(&u.ID, &u.Phone, &u.Email, &u.EmailVerified, &u.EmailVerifiedAt,
-		&u.PasswordHash, &u.DisplayName, &role, &u.IsBlocked, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		&u.PasswordHash, &u.TokenVersion, &u.DisplayName, &role, &u.IsBlocked, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -159,10 +159,14 @@ func (r *UserRepo) CountBlocked(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-// SetBlocked toggles the blocked flag (admin operation).
+// SetBlocked toggles the blocked flag (admin operation). Blocking bumps the
+// token version so outstanding access tokens stop working immediately.
 func (r *UserRepo) SetBlocked(ctx context.Context, id uuid.UUID, blocked bool) error {
 	defer observe("users.set_blocked", time.Now())
-	tag, err := r.db.Exec(ctx, `UPDATE users SET is_blocked = $2 WHERE id = $1`, id, blocked)
+	tag, err := r.db.Exec(ctx, `UPDATE users
+		SET is_blocked = $2,
+		    token_version = token_version + CASE WHEN $2 THEN 1 ELSE 0 END
+		WHERE id = $1`, id, blocked)
 	if err != nil {
 		return err
 	}
@@ -172,10 +176,13 @@ func (r *UserRepo) SetBlocked(ctx context.Context, id uuid.UUID, blocked bool) e
 	return nil
 }
 
-// UpdatePassword replaces the password hash and revokes nothing by itself.
+// UpdatePassword replaces the password hash and bumps the token version so
+// every access token issued with the old credentials is rejected.
 func (r *UserRepo) UpdatePassword(ctx context.Context, id uuid.UUID, hash string) error {
 	defer observe("users.update_password", time.Now())
-	tag, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, hash)
+	tag, err := r.db.Exec(ctx, `UPDATE users
+		SET password_hash = $2, token_version = token_version + 1
+		WHERE id = $1`, id, hash)
 	if err != nil {
 		return err
 	}
@@ -185,10 +192,13 @@ func (r *UserRepo) UpdatePassword(ctx context.Context, id uuid.UUID, hash string
 	return nil
 }
 
-// SetRole changes a user's authorization role.
+// SetRole changes a user's authorization role and bumps the token version so a
+// freshly promoted admin gets a token with the new role.
 func (r *UserRepo) SetRole(ctx context.Context, id uuid.UUID, role domain.Role) error {
 	defer observe("users.set_role", time.Now())
-	tag, err := r.db.Exec(ctx, `UPDATE users SET role = $2 WHERE id = $1`, id, string(role))
+	tag, err := r.db.Exec(ctx, `UPDATE users
+		SET role = $2, token_version = token_version + 1
+		WHERE id = $1`, id, string(role))
 	if err != nil {
 		return err
 	}

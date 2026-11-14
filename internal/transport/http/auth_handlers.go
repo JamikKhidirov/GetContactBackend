@@ -6,8 +6,6 @@ import (
 
 	"github.com/getcontact/backend/internal/apperr"
 	"github.com/getcontact/backend/internal/service"
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 )
 
 // deviceInfo is the optional, consent-based device block a mobile client may
@@ -47,7 +45,7 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 	res, err := a.auth.Register(r.Context(), service.RegisterInput{
 		Phone: req.Phone, Password: req.Password, DisplayName: req.DisplayName,
 		Email: req.Email, EmailCode: req.EmailCode,
-	}, metaFrom(r, req.Device))
+	}, a.metaFrom(r, req.Device))
 	if err != nil {
 		writeError(w, r, a.log, err)
 		return
@@ -67,7 +65,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, a.log, err)
 		return
 	}
-	res, err := a.auth.Login(r.Context(), req.Phone, req.Password, metaFrom(r, req.Device))
+	res, err := a.auth.Login(r.Context(), req.Phone, req.Password, a.metaFrom(r, req.Device))
 	if err != nil {
 		writeError(w, r, a.log, err)
 		return
@@ -86,7 +84,7 @@ func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, a.log, err)
 		return
 	}
-	res, err := a.auth.Refresh(r.Context(), req.RefreshToken, metaFrom(r, req.Device))
+	res, err := a.auth.Refresh(r.Context(), req.RefreshToken, a.metaFrom(r, req.Device))
 	if err != nil {
 		writeError(w, r, a.log, err)
 		return
@@ -105,9 +103,24 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, a.log, err)
 		return
 	}
-	err := a.auth.Logout(r.Context(), tokenIDFrom(r.Context()), sessionIDFrom(r.Context()),
+	uid, _ := userIDFrom(r.Context())
+	err := a.auth.Logout(r.Context(), uid, tokenIDFrom(r.Context()), sessionIDFrom(r.Context()),
 		tokenExpiryFrom(r.Context()), req.RefreshToken)
 	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
+// logoutAll ends every session of the authenticated account.
+func (a *API) logoutAll(w http.ResponseWriter, r *http.Request) {
+	uid, ok := userIDFrom(r.Context())
+	if !ok {
+		writeError(w, r, a.log, apperr.Unauthorized(""))
+		return
+	}
+	if err := a.auth.LogoutAll(r.Context(), uid); err != nil {
 		writeError(w, r, a.log, err)
 		return
 	}
@@ -150,9 +163,9 @@ func (a *API) revokeSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, a.log, apperr.Unauthorized(""))
 		return
 	}
-	sid, err := uuid.Parse(strings.TrimSpace(chi.URLParam(r, "sessionID")))
+	sid, err := pathUUID(r, "sessionID")
 	if err != nil {
-		writeError(w, r, a.log, apperr.Invalid(map[string]string{"session_id": "must be a valid UUID"}))
+		writeError(w, r, a.log, err)
 		return
 	}
 	if err := a.auth.RevokeSession(r.Context(), uid, sid, sessionIDFrom(r.Context())); err != nil {
@@ -165,9 +178,9 @@ func (a *API) revokeSession(w http.ResponseWriter, r *http.Request) {
 // metaFrom merges the requested metadata sources in priority order:
 // proxy-aware IP, then the X-Device-* headers, then the optional JSON device
 // block. Later sources only fill empty values.
-func metaFrom(r *http.Request, dev *deviceInfo) service.Meta {
+func (a *API) metaFrom(r *http.Request, dev *deviceInfo) service.Meta {
 	meta := service.Meta{
-		IP:           clientIP(r),
+		IP:           a.clientIP(r),
 		UserAgent:    r.UserAgent(),
 		DeviceID:     r.Header.Get("X-Device-Id"),
 		DeviceName:   r.Header.Get("X-Device-Name"),

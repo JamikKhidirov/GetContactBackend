@@ -31,7 +31,7 @@
 
 ```bash
 export REGISTRY=ghcr.io/your-org
-export TAG=1.1.0
+export TAG=1.2.0
 
 docker build -f deploy/docker/Dockerfile --target api    -t $REGISTRY/getcontact-api:$TAG    .
 docker build -f deploy/docker/Dockerfile --target worker -t $REGISTRY/getcontact-worker:$TAG .
@@ -44,8 +44,8 @@ docker push $REGISTRY/getcontact-worker:$TAG
 
 ```bash
 # Linux
-sed -i "s#ghcr.io/your-org/getcontact-api:1.1.0#$REGISTRY/getcontact-api:$TAG#" deploy/k8s/05-api.yaml
-sed -i "s#ghcr.io/your-org/getcontact-worker:1.1.0#$REGISTRY/getcontact-worker:$TAG#" deploy/k8s/06-worker.yaml
+sed -i "s#ghcr.io/your-org/getcontact-api:1.2.0#$REGISTRY/getcontact-api:$TAG#" deploy/k8s/05-api.yaml
+sed -i "s#ghcr.io/your-org/getcontact-worker:1.2.0#$REGISTRY/getcontact-worker:$TAG#" deploy/k8s/06-worker.yaml
 ```
 
 Или используйте kustomize `images:`:
@@ -54,10 +54,10 @@ sed -i "s#ghcr.io/your-org/getcontact-worker:1.1.0#$REGISTRY/getcontact-worker:$
 images:
   - name: ghcr.io/your-org/getcontact-api
     newName: ghcr.io/your-org/getcontact-api
-    newTag: 1.1.0
+    newTag: 1.2.0
   - name: ghcr.io/your-org/getcontact-worker
     newName: ghcr.io/your-org/getcontact-worker
-    newTag: 1.1.0
+    newTag: 1.2.0
 ```
 
 Для приватного registry:
@@ -97,7 +97,9 @@ kubectl -n getcontact create secret generic getcontact-secrets \
   --from-literal=POSTGRES_PASSWORD="$PG_PASS" \
   --from-literal=DATABASE_URL="postgres://getcontact:${PG_PASS}@postgres:5432/getcontact?sslmode=disable" \
   --from-literal=JWT_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=EMAIL_CODE_SECRET="$(openssl rand -hex 32)" \
   --from-literal=ADMIN_PASSWORD="$(openssl rand -base64 18)" \
+  --from-literal=SMTP_PASSWORD="<gmail-app-password>" \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
@@ -135,6 +137,17 @@ data:
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_PUBLIC_RPM: "120"
   RATE_LIMIT_AUTH_RPM: "20"
+  TRUSTED_PROXIES: "10.0.0.0/8"
+  EMAIL_ENABLED: "true"
+  EMAIL_PROVIDER: smtp
+  EMAIL_FROM_ADDRESS: "no-reply@getcontact.local"
+  EMAIL_CODE_TTL: 10m
+  EMAIL_CODE_COOLDOWN: 60s
+  EMAIL_DEV_ECHO: "false"
+  SMTP_HOST: smtp.gmail.com
+  SMTP_PORT: "587"
+  SMTP_USERNAME: "no-reply@getcontact.local"
+  SMTP_TLS: "true"
   ADMIN_PHONE: "+79990000000"
   ADMIN_NAME: Platform Admin
   DB_MAX_CONNS: "25"

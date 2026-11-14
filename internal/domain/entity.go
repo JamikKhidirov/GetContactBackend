@@ -26,11 +26,14 @@ type User struct {
 	EmailVerified   bool       `json:"email_verified"`
 	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
 	PasswordHash    string     `json:"-"`
-	DisplayName     string     `json:"display_name"`
-	Role            Role       `json:"role"`
-	IsBlocked       bool       `json:"is_blocked"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	// TokenVersion is embedded in access tokens. Bumping it invalidates every
+	// outstanding token for the account (block, password change, role change).
+	TokenVersion int       `json:"-"`
+	DisplayName  string    `json:"display_name"`
+	Role         Role      `json:"role"`
+	IsBlocked    bool      `json:"is_blocked"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Public returns a copy safe to expose over the API.
@@ -289,8 +292,27 @@ type Pagination struct {
 	PerPage int
 }
 
-// Offset returns the SQL offset for the requested page.
-func (p Pagination) Offset() int { return (p.Page - 1) * p.PerPage }
+// Offset returns a safe, non-negative row offset. It clamps the page size and
+// the total offset so arithmetic cannot overflow on 32-bit builds and a hostile
+// page number cannot request an unbounded deep scan.
+func (p Pagination) Offset() int {
+	page := p.Page
+	if page < 1 {
+		page = 1
+	}
+	perPage := p.PerPage
+	if perPage < 1 {
+		perPage = 20
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	const maxOffset = 1_000_000
+	if page > maxOffset/perPage {
+		return maxOffset
+	}
+	return (page - 1) * perPage
+}
 
 // Page is a generic paginated result.
 type Page[T any] struct {

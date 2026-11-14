@@ -385,11 +385,29 @@ func TestEndToEndUserJourney(t *testing.T) {
 	expect(t, "login after unblock", status, http.StatusOK, body)
 	access = str(t, data(t, body)["tokens"].(map[string]any), "access_token")
 
+	// An admin can end every session, which must invalidate the live access
+	// token immediately.
+	status, body = c.request(t, http.MethodDelete, "/api/v1/admin/users/"+userID+"/sessions", adminAccess, nil)
+	expect(t, "admin revoke sessions", status, http.StatusOK, body)
+	status, body = c.request(t, http.MethodGet, "/api/v1/auth/me", access, nil)
+	expect(t, "me after admin session revoke", status, http.StatusUnauthorized, body)
+
+	status, body = c.request(t, http.MethodPost, "/api/v1/auth/login", "", map[string]any{
+		"phone": phone, "password": password,
+	})
+	expect(t, "login after admin session revoke", status, http.StatusOK, body)
+	access = str(t, data(t, body)["tokens"].(map[string]any), "access_token")
+
 	newPassword := "NewPassw0rd456"
 	status, body = c.request(t, http.MethodPut, "/api/v1/users/me/password", access, map[string]any{
 		"current_password": password, "new_password": newPassword,
 	})
 	expect(t, "change password", status, http.StatusNoContent, body)
+
+	// token_version was bumped, so the access token issued before the change
+	// is rejected even though its TTL has not expired.
+	status, body = c.request(t, http.MethodGet, "/api/v1/auth/me", access, nil)
+	expect(t, "me after password change", status, http.StatusUnauthorized, body)
 
 	status, body = c.request(t, http.MethodPost, "/api/v1/auth/login", "", map[string]any{
 		"phone": phone, "password": password,
@@ -469,8 +487,13 @@ func TestDeviceSessionsAndMetadata(t *testing.T) {
 	if got := str(t, session, "app_version"); got != "1.2.3" {
 		t.Fatalf("app_version %q", got)
 	}
-	if got := str(t, session, "ip"); got != "203.0.113.7" {
-		t.Fatalf("ip %q, want proxy-aware 203.0.113.7", got)
+	// X-Forwarded-For is only honoured when the direct peer is listed in
+	// TRUSTED_PROXIES. The dev stack does not trust the host gateway, so the
+	// spoofed address must be ignored and the real socket IP stored instead.
+	if got := str(t, session, "ip"); got == "203.0.113.7" {
+		t.Fatalf("spoofed X-Forwarded-For was trusted: %q", got)
+	} else if got == "" {
+		t.Fatal("session ip is empty")
 	}
 	// Long non-ASCII metadata is truncated by runes, not bytes, so it stays
 	// valid UTF-8 and fits the VARCHAR(128) column.
@@ -531,6 +554,12 @@ func TestDeviceSessionsAndMetadata(t *testing.T) {
 	// Unknown session ids are rejected without leaking existence.
 	status, body = c.request(t, http.MethodDelete, "/api/v1/auth/sessions/00000000-0000-4000-8000-000000000000", access1, nil)
 	expect(t, "revoke unknown session", status, http.StatusNotFound, body)
+
+	// Logout everywhere ends the surviving session and revokes its access token.
+	status, body = c.request(t, http.MethodPost, "/api/v1/auth/logout/all", access1, nil)
+	expect(t, "logout all", status, http.StatusNoContent, body)
+	status, body = c.request(t, http.MethodGet, "/api/v1/auth/me", access1, nil)
+	expect(t, "me after logout all", status, http.StatusUnauthorized, body)
 }
 
 func TestMetricsAndDocs(t *testing.T) {

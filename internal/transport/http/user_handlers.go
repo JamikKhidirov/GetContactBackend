@@ -8,6 +8,14 @@ import (
 	"github.com/getcontact/backend/internal/service"
 )
 
+// publicProfile is the only view of another member's account exposed by the
+// API. Role, block state, verification flags and the raw phone stay private.
+type publicProfile struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Phone       string `json:"phone"`
+}
+
 func (a *API) getUser(w http.ResponseWriter, r *http.Request) {
 	id, err := pathUUID(r, "id")
 	if err != nil {
@@ -21,9 +29,12 @@ func (a *API) getUser(w http.ResponseWriter, r *http.Request) {
 	}
 	caller, _ := userIDFrom(r.Context())
 	if caller != id && roleFrom(r.Context()) != domain.RoleAdmin {
-		// Do not disclose another member's full phone or email.
-		user.Phone = platform.MaskPhone(user.Phone)
-		user.Email = ""
+		writeData(w, http.StatusOK, publicProfile{
+			ID:          user.ID.String(),
+			DisplayName: user.DisplayName,
+			Phone:       platform.MaskPhone(user.Phone),
+		})
+		return
 	}
 	writeData(w, http.StatusOK, user)
 }

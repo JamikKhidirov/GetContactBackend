@@ -26,8 +26,8 @@ var DefaultArgonParams = ArgonParams{Memory: 64 * 1024, Iterations: 3, Threads: 
 
 // HashPassword returns a PHC-formatted argon2id hash: $argon2id$v=19$m=...,t=...,p=...$salt$hash.
 func HashPassword(password string, p ArgonParams) (string, error) {
-	if len(password) < 8 {
-		return "", fmt.Errorf("password must be at least 8 characters")
+	if err := ValidatePassword(password); err != nil {
+		return "", err
 	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {

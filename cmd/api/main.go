@@ -85,13 +85,14 @@ func run() error {
 		Threads: cfg.Auth.ArgonThreads, KeyLen: cfg.Auth.ArgonKeyLen,
 	}
 	authSvc := service.NewAuthService(userRepo, tokenRepo, cache, tm, cfg.Auth.RefreshTTL, argon, publisher, log)
-	emailSvc := service.NewEmailAuthService(cfg.Email, cfg.Env, userRepo, emailRepo, authSvc, log)
+	emailSvc := service.NewEmailAuthService(cfg.Email, cfg.Env, userRepo, emailRepo, authSvc, cache, log)
 	authSvc.SetEmailAuth(emailSvc)
 	userSvc := service.NewUserService(userRepo, contactRepo, numberRepo, tokenRepo, argon, log)
 	contactSvc := service.NewContactService(contactRepo, publisher, log)
 	numberSvc := service.NewNumberService(numberRepo, cache, publisher, log, cfg.Redis.CacheTTL)
 	searchSvc := service.NewSearchService(numberRepo, contactRepo)
 	adminSvc := service.NewAdminService(userRepo, numberRepo, contactRepo, tokenRepo, auditRepo, cache, publisher, log)
+	adminSvc.SetAccessTTL(cfg.Auth.AccessTTL)
 
 	if err := authSvc.BootstrapAdmin(ctx, cfg.Admin.Phone, cfg.Admin.Password, cfg.Admin.Name); err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
@@ -105,7 +106,7 @@ func run() error {
 
 	handler := httptransport.New(httptransport.Deps{
 		Config: cfg, Log: log, Version: Version,
-		Auth: authSvc, Email: emailSvc, Users: userSvc,
+		Auth: authSvc, Email: emailSvc, Users: userSvc, UserRepo: userRepo,
 		Contacts: contactSvc, Numbers: numberSvc,
 		Search: searchSvc, Admin: adminSvc, Tokens: tm, Cache: cache, DB: pool, Publisher: publisher,
 	})

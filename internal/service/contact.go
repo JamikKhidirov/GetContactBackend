@@ -245,6 +245,9 @@ func normalizePagination(page, perPage int) domain.Pagination {
 	if page < 1 {
 		page = 1
 	}
+	if page > 1_000_000 {
+		page = 1_000_000
+	}
 	if perPage < 1 {
 		perPage = 20
 	}

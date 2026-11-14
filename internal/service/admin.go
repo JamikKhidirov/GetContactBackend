@@ -21,19 +21,27 @@ import (
 
 // AdminService implements back-office operations.
 type AdminService struct {
-	users    domain.UserRepository
-	numbers  domain.NumberRepository
-	contacts domain.ContactRepository
-	tokens   domain.TokenRepository
-	audit    domain.AuditRepository
-	cache    *rediscache.Cache
-	pub      events.Publisher
-	log      *slog.Logger
+	users     domain.UserRepository
+	numbers   domain.NumberRepository
+	contacts  domain.ContactRepository
+	tokens    domain.TokenRepository
+	audit     domain.AuditRepository
+	cache     *rediscache.Cache
+	pub       events.Publisher
+	log       *slog.Logger
+	accessTTL time.Duration
 }
 
 // NewAdminService wires admin use cases.
 func NewAdminService(users domain.UserRepository, numbers domain.NumberRepository, contacts domain.ContactRepository, tokens domain.TokenRepository, audit domain.AuditRepository, cache *rediscache.Cache, pub events.Publisher, log *slog.Logger) *AdminService {
-	return &AdminService{users: users, numbers: numbers, contacts: contacts, tokens: tokens, audit: audit, cache: cache, pub: pub, log: log}
+	return &AdminService{users: users, numbers: numbers, contacts: contacts, tokens: tokens, audit: audit, cache: cache, pub: pub, log: log, accessTTL: 15 * time.Minute}
+}
+
+// SetAccessTTL aligns the session denylist window with the access-token TTL.
+func (s *AdminService) SetAccessTTL(ttl time.Duration) {
+	if ttl > 0 {
+		s.accessTTL = ttl
+	}
 }
 
 // NumberDossier is the admin "full picture" for one number: profile, tags,
@@ -129,6 +137,8 @@ func (s *AdminService) NumberDossier(ctx context.Context, phoneRaw string, actor
 func (s *AdminService) Audit(ctx context.Context, filter domain.AuditFilter) (domain.Page[domain.AuditEvent], error) {
 	filter.EventType = strings.TrimSpace(filter.EventType)
 	filter.AggregateID = strings.TrimSpace(filter.AggregateID)
+	p := normalizePagination(filter.Page, filter.PerPage)
+	filter.Page, filter.PerPage = p.Page, p.PerPage
 	page, err := s.audit.List(ctx, filter)
 	if err != nil {
 		return page, apperr.Internal(err)
@@ -443,6 +453,38 @@ func (s *AdminService) DeleteUser(ctx context.Context, actorID, targetID uuid.UU
 		return apperr.Internal(err)
 	}
 	return nil
+}
+
+// RevokeUserSessions ends every device session of a user (admin operation).
+// Outstanding access tokens are denied until their TTL expires.
+func (s *AdminService) RevokeUserSessions(ctx context.Context, actorID, targetID uuid.UUID) (int, error) {
+	if actorID == targetID {
+		return 0, apperr.BadRequest("you cannot revoke your own sessions via the admin API")
+	}
+	active, err := s.tokens.ListActiveForUser(ctx, targetID)
+	if err != nil {
+		return 0, apperr.Internal(err)
+	}
+	if err := s.tokens.RevokeAllForUser(ctx, targetID); err != nil {
+		return 0, apperr.Internal(err)
+	}
+	for i := range active {
+		if err := s.cache.DenySession(ctx, active[i].ID.String(), s.accessTTL); err != nil {
+			s.log.Warn("session denylist failed", "session_id", active[i].ID, "error", err)
+		}
+	}
+	for i := range active {
+		ev := events.NewEvent(domain.EventUserSessionRevoked, targetID.String(), events.UserSessionRevoked{
+			UserID: targetID, SessionID: active[i].ID, ActorID: actorID,
+		})
+		pubCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		err := s.pub.Publish(pubCtx, ev)
+		cancel()
+		if err != nil {
+			s.log.Warn("user.session_revoked publish failed", "error", err)
+		}
+	}
+	return len(active), nil
 }
 
 // ListReports returns the spam-report moderation queue.

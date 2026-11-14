@@ -79,7 +79,7 @@ up{job=~"getcontact-.*"}
 
 | Метрика | Тип | Labels |
 |---|---|---|
-| `getcontact_auth_attempts_total` | counter | `operation` (`register/login/refresh/logout`), `result` (`success/error/blocked`) |
+| `getcontact_auth_attempts_total` | counter | `operation` (`register/login/refresh/logout/logout_all/session_revoke`), `result` (`ok/invalid/conflict/denied/blocked`) |
 
 ### Сборка и runtime
 

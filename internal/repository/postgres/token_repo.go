@@ -91,6 +91,16 @@ func (r *TokenRepo) GetByHash(ctx context.Context, hash string) (*domain.Refresh
 	return t, err
 }
 
+// ConsumeForRotation revokes and returns a refresh token in one atomic
+// statement. Concurrent replays see zero rows and get ErrInvalidToken.
+func (r *TokenRepo) ConsumeForRotation(ctx context.Context, hash string) (*domain.RefreshToken, error) {
+	defer observe("tokens.consume_for_rotation", time.Now())
+	return scanRefreshToken(r.db.QueryRow(ctx, `UPDATE refresh_tokens
+		SET revoked_at = NOW()
+		WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()
+		RETURNING `+refreshTokenColumns, hash))
+}
+
 // Revoke marks a single token as used.
 func (r *TokenRepo) Revoke(ctx context.Context, id uuid.UUID) error {
 	defer observe("tokens.revoke", time.Now())

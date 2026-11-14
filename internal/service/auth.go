@@ -192,7 +192,7 @@ func (s *AuthService) Login(ctx context.Context, phoneRaw, password string, meta
 	}
 	if user.IsBlocked {
 		metrics.AuthAttempts.WithLabelValues("login", "blocked").Inc()
-		return nil, apperr.Forbidden("user is blocked")
+		return nil, apperr.Blocked()
 	}
 	tokens, sessionID, err := s.issuePair(ctx, user, meta)
 	if err != nil {
@@ -215,13 +215,10 @@ func (s *AuthService) Refresh(ctx context.Context, rawToken string, meta Meta) (
 		return nil, apperr.Unauthorized("refresh_token is required")
 	}
 	hash := platform.HashOpaqueToken(rawToken)
-	stored, err := s.tokens.GetByHash(ctx, hash)
+	stored, err := s.tokens.ConsumeForRotation(ctx, hash)
 	if err != nil {
 		metrics.AuthAttempts.WithLabelValues("refresh", "denied").Inc()
 		return nil, apperr.Unauthorized("invalid or expired refresh token")
-	}
-	if err := s.tokens.Revoke(ctx, stored.ID); err != nil {
-		return nil, apperr.Internal(err)
 	}
 	user, err := s.users.GetByID(ctx, stored.UserID)
 	if err != nil {
@@ -231,7 +228,7 @@ func (s *AuthService) Refresh(ctx context.Context, rawToken string, meta Meta) (
 		return nil, apperr.Internal(err)
 	}
 	if user.IsBlocked {
-		return nil, apperr.Forbidden("user is blocked")
+		return nil, apperr.Blocked()
 	}
 	// Keep the device context stable across rotation when the client does not
 	// resend its headers; it belongs to the same physical session.
@@ -249,19 +246,32 @@ func (s *AuthService) Refresh(ctx context.Context, rawToken string, meta Meta) (
 }
 
 // Logout revokes the refresh token (if supplied) and blacklists the access jti
-// plus the bound session.
-func (s *AuthService) Logout(ctx context.Context, jti, sessionID string, accessExpiresAt time.Time, refreshToken string) error {
+// plus the bound session. The refresh token is only revoked when it belongs to
+// the authenticated caller, so a leaked token cannot be used to log out another
+// account.
+func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, jti, sessionID string, accessExpiresAt time.Time, refreshToken string) error {
 	if refreshToken != "" {
-		if stored, err := s.tokens.GetByHash(ctx, platform.HashOpaqueToken(refreshToken)); err == nil {
-			_ = s.tokens.Revoke(ctx, stored.ID)
+		stored, err := s.tokens.GetByHash(ctx, platform.HashOpaqueToken(refreshToken))
+		switch {
+		case err == nil && stored.UserID == userID:
+			if err := s.tokens.RevokeForUser(ctx, stored.ID, userID); err != nil && !errors.Is(err, domain.ErrNotFound) {
+				s.log.Warn("refresh token revoke failed", "error", err)
+			}
 			if err := s.cache.DenySession(ctx, stored.ID.String(), s.tokensMgr.TTL()); err != nil {
 				s.log.Warn("session denylist failed", "error", err)
 			}
+		case err == nil:
+			s.log.Warn("logout ignored a refresh token owned by another user",
+				"caller_id", userID, "owner_id", stored.UserID)
+		case !errors.Is(err, domain.ErrNotFound):
+			s.log.Warn("refresh token lookup failed", "error", err)
 		}
 	}
 	if sessionID != "" {
 		if sid, err := uuid.Parse(sessionID); err == nil {
-			_ = s.tokens.Revoke(ctx, sid)
+			if err := s.tokens.RevokeForUser(ctx, sid, userID); err != nil && !errors.Is(err, domain.ErrNotFound) {
+				s.log.Warn("session revoke failed", "error", err)
+			}
 		}
 		if err := s.cache.DenySession(ctx, sessionID, s.tokensMgr.TTL()); err != nil {
 			s.log.Warn("session denylist failed", "error", err)
@@ -279,6 +289,28 @@ func (s *AuthService) Logout(ctx context.Context, jti, sessionID string, accessE
 	return nil
 }
 
+// LogoutAll ends every device session for the caller and invalidates their
+// outstanding access tokens.
+func (s *AuthService) LogoutAll(ctx context.Context, userID uuid.UUID) error {
+	active, err := s.tokens.ListActiveForUser(ctx, userID)
+	if err != nil {
+		return apperr.Internal(err)
+	}
+	if err := s.tokens.RevokeAllForUser(ctx, userID); err != nil {
+		return apperr.Internal(err)
+	}
+	for i := range active {
+		if err := s.cache.DenySession(ctx, active[i].ID.String(), s.tokensMgr.TTL()); err != nil {
+			s.log.Warn("session denylist failed", "session_id", active[i].ID, "error", err)
+		}
+		s.publish(ctx, events.NewEvent(domain.EventUserSessionRevoked, userID.String(), events.UserSessionRevoked{
+			UserID: userID, SessionID: active[i].ID, ActorID: userID,
+		}))
+	}
+	metrics.AuthAttempts.WithLabelValues("logout_all", "ok").Inc()
+	return nil
+}
+
 // Me returns the authenticated user's profile.
 func (s *AuthService) Me(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
 	user, err := s.users.GetByID(ctx, userID)
@@ -289,7 +321,7 @@ func (s *AuthService) Me(ctx context.Context, userID uuid.UUID) (*domain.User, e
 		return nil, apperr.Internal(err)
 	}
 	if user.IsBlocked {
-		return nil, apperr.Forbidden("user is blocked")
+		return nil, apperr.Blocked()
 	}
 	return user, nil
 }
@@ -315,8 +347,16 @@ func (s *AuthService) BootstrapAdmin(ctx context.Context, phoneRaw, password, na
 			}
 		}
 		// Keep the bootstrap credentials aligned with the configured env so a
-		// demo stack with a persisted volume can always be reproduced.
-		return s.users.UpdatePassword(ctx, existing.ID, hash)
+		// demo stack with a persisted volume can always be reproduced. The
+		// password update bumps the token version and we drop refresh sessions
+		// so an old credential cannot survive the rotation.
+		if err := s.users.UpdatePassword(ctx, existing.ID, hash); err != nil {
+			return err
+		}
+		if err := s.tokens.RevokeAllForUser(ctx, existing.ID); err != nil {
+			s.log.Warn("bootstrap admin session revoke failed", "user_id", existing.ID, "error", err)
+		}
+		return nil
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
 		return err
@@ -359,7 +399,7 @@ func (s *AuthService) issuePair(ctx context.Context, user *domain.User, meta Met
 	}); err != nil {
 		return nil, uuid.Nil, apperr.Internal(err)
 	}
-	access, _, accessExp, err := s.tokensMgr.IssueWithSession(user.ID, user.Role, sessionID)
+	access, _, accessExp, err := s.tokensMgr.IssueWithSessionVersion(user.ID, user.Role, sessionID, user.TokenVersion)
 	if err != nil {
 		return nil, uuid.Nil, apperr.Internal(err)
 	}

@@ -14,6 +14,9 @@ import (
 type Claims struct {
 	Role string `json:"role"`
 	Type string `json:"typ"`
+	// TokenVersion is compared with users.token_version on every request so a
+	// blocked account or a password change invalidates existing access tokens.
+	TokenVersion int `json:"ver"`
 	// SessionID links the access token to its refresh session so a revoked
 	// device session can invalidate all of its outstanding access tokens.
 	SessionID string `json:"sid,omitempty"`
@@ -46,6 +49,13 @@ func (m *TokenManager) Issue(userID uuid.UUID, role domain.Role) (token, jti str
 // IssueWithSession creates an access token bound to a refresh session. Passing
 // uuid.Nil keeps the token valid without a session binding.
 func (m *TokenManager) IssueWithSession(userID uuid.UUID, role domain.Role, sessionID uuid.UUID) (token, jti string, expiresAt time.Time, err error) {
+	return m.IssueWithSessionVersion(userID, role, sessionID, 0)
+}
+
+// IssueWithSessionVersion is IssueWithSession with an explicit token version.
+// The API includes the user's current token_version so it can be revoked on
+// block, password change and role change.
+func (m *TokenManager) IssueWithSessionVersion(userID uuid.UUID, role domain.Role, sessionID uuid.UUID, tokenVersion int) (token, jti string, expiresAt time.Time, err error) {
 	now := time.Now().UTC()
 	expiresAt = now.Add(m.ttl)
 	jti = uuid.NewString()
@@ -54,9 +64,10 @@ func (m *TokenManager) IssueWithSession(userID uuid.UUID, role domain.Role, sess
 		sid = sessionID.String()
 	}
 	claims := Claims{
-		Role:      string(role),
-		Type:      "access",
-		SessionID: sid,
+		Role:         string(role),
+		Type:         "access",
+		TokenVersion: tokenVersion,
+		SessionID:    sid,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   userID.String(),

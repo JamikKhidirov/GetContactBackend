@@ -7,28 +7,39 @@ info:
     спам-репорты, личная телефонная книга и админ-панель.
 
     ## Возможности
-    - JWT access/refresh с ротацией refresh-токенов и blacklist при logout.
+    - JWT access/refresh с атомарной ротацией refresh-токенов, версией токена
+      и blacklist при logout.
     - Публичный caller-ID lookup с кэшем Redis и счётчиком просмотров.
     - Community-теги и спам-репорты с пересчётом spam score 0..100.
     - Личная телефонная книга с bulk-import до 500 контактов.
+    - Вход по email-коду и подтверждение адреса через transactional outbox.
     - Админ-статистика, блокировка пользователей, модерация репортов.
     - Kafka-события, Prometheus-метрики, Grafana-дашборд.
 
     ## Авторизация
-    1. `POST /api/v1/auth/register` или `POST /api/v1/auth/login`.
+    1. `POST /api/v1/auth/register`, `POST /api/v1/auth/login` или
+       `POST /api/v1/auth/email/code` + `POST /api/v1/auth/email/login`.
     2. Возьмите `data.tokens.access_token` и передайте заголовок
        `Authorization: Bearer <access_token>`.
     3. Access token живёт 15 минут, refresh token — 30 дней и одноразовый.
-    4. `POST /api/v1/auth/logout` отзывает refresh и заносит access JTI в Redis blacklist.
+    4. `POST /api/v1/auth/logout` завершает текущую сессию,
+       `POST /api/v1/auth/logout/all` — все сессии аккаунта.
+    5. Блокировка, смена пароля и смена роли немедленно инвалидируют уже
+       выданные access-токены (claim `ver` сверяется с `users.token_version`).
 
     ## Формат ответов
     Успех: `{ "data": ... }`, списки дополнительно содержат `meta`.
     Ошибка: `{ "error": { "code", "message", "details", "request_id" } }`.
 
     ## Коды ошибок
-    `VALIDATION_ERROR` (422), `UNAUTHORIZED` (401), `FORBIDDEN` (403),
-    `NOT_FOUND` (404), `CONFLICT` (409), `RATE_LIMITED` (429),
-    `INTERNAL_ERROR` (500), `REQUEST_TIMEOUT` (504).
+    `BAD_REQUEST` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403),
+    `USER_BLOCKED` (403), `NOT_FOUND` (404), `CONFLICT` (409),
+    `VALIDATION_ERROR` (422), `RATE_LIMITED` (429), `INTERNAL_ERROR` (500),
+    `EMAIL_DISABLED` (503), `AUTH_UNAVAILABLE` (503), `REQUEST_TIMEOUT` (504).
+
+    Все маршруты `/api/v1` ограничены по частоте и могут вернуть `429` с
+    заголовком `Retry-After`. `X-Forwarded-For`/`X-Real-IP` учитываются только
+    для прокси из `TRUSTED_PROXIES`.
   contact:
     name: GetContact Platform Team
     email: api@getcontact.local
@@ -61,6 +72,7 @@ tags:
 paths:
   /:
     get:
+      operationId: getServiceInfo
       tags: [Health]
       summary: Индекс сервиса
       security: []
@@ -77,6 +89,7 @@ paths:
 
   /healthz:
     get:
+      operationId: getHealthz
       tags: [Health]
       summary: Liveness probe
       security: []
@@ -90,6 +103,7 @@ paths:
 
   /readyz:
     get:
+      operationId: getReadyz
       tags: [Health]
       summary: Readiness probe
       description: Проверяет Postgres, Redis и Kafka (если включена).
@@ -110,6 +124,7 @@ paths:
 
   /version:
     get:
+      operationId: getVersion
       tags: [Health]
       summary: Версия сборки
       security: []
@@ -126,6 +141,7 @@ paths:
 
   /metrics:
     get:
+      operationId: getMetrics
       tags: [Health]
       summary: Prometheus metrics
       description: Текстовый формат Prometheus 0.0.4.
@@ -140,6 +156,7 @@ paths:
 
   /openapi.yaml:
     get:
+      operationId: getOpenapiYaml
       tags: [Health]
       summary: Эта OpenAPI-спецификация
       security: []
@@ -153,6 +170,7 @@ paths:
 
   /docs:
     get:
+      operationId: getDocs
       tags: [Health]
       summary: Swagger UI
       security: []
@@ -166,6 +184,7 @@ paths:
 
   /api/v1/auth/register:
     post:
+      operationId: postAuthRegister
       tags: [Auth]
       summary: Регистрация
       description: Создаёт пользователя и сразу выдаёт пару токенов.
@@ -197,6 +216,7 @@ paths:
 
   /api/v1/auth/login:
     post:
+      operationId: postAuthLogin
       tags: [Auth]
       summary: Вход по телефону и паролю
       security: []
@@ -225,6 +245,7 @@ paths:
 
   /api/v1/auth/refresh:
     post:
+      operationId: postAuthRefresh
       tags: [Auth]
       summary: Ротация refresh-токена
       description: Refresh token одноразовый. Повторное использование возвращает 401.
@@ -249,6 +270,7 @@ paths:
 
   /api/v1/auth/email/code:
     post:
+      operationId: postAuthEmailCode
       tags: [Auth, Email]
       summary: Отправить одноразовый код на email
       description: |
@@ -261,7 +283,11 @@ paths:
         Ответ не раскрывает, существует ли аккаунт с таким адресом. В
         development с `EMAIL_PROVIDER=log` поле `dev_code` содержит код для
         локального тестирования; в production оно всегда отсутствует.
-      security: []
+
+        Для `purpose=verify_email` нужен Bearer-токен; без него возвращается 401.
+      security:
+        - {}
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -280,13 +306,20 @@ paths:
                 $ref: '#/components/schemas/DataEmailCodeResult'
         '422':
           $ref: '#/components/responses/Validation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
           description: Email-аутентификация отключена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
 
   /api/v1/auth/email/login:
     post:
+      operationId: postAuthEmailLogin
       tags: [Auth, Email]
       summary: Вход по email и одноразовому коду
       description: |
@@ -315,6 +348,7 @@ paths:
 
   /api/v1/auth/email/verify:
     post:
+      operationId: postAuthEmailVerify
       tags: [Auth, Email]
       summary: Запросить код подтверждения текущего адреса
       description: |
@@ -342,6 +376,7 @@ paths:
 
   /api/v1/auth/email/verify/confirm:
     post:
+      operationId: postAuthEmailVerifyConfirm
       tags: [Auth, Email]
       summary: Подтвердить владение email
       description: |
@@ -367,8 +402,11 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/auth/logout:
     post:
+      operationId: postAuthLogout
       tags: [Auth]
       summary: Выход
       description: Отзывает refresh token (если передан) и blacklist-ит текущий access JTI.
@@ -384,8 +422,27 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /api/v1/auth/logout/all:
+    post:
+      operationId: postAuthLogoutAll
+      tags: [Auth, Sessions]
+      summary: Выйти на всех устройствах
+      description: |
+        Отзывает все refresh-сессии пользователя и блокирует связанные
+        access-токены через Redis denylist до истечения их TTL.
+      responses:
+        '204':
+          description: Все сессии завершены
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/auth/me:
     get:
+      operationId: getAuthMe
       tags: [Auth]
       summary: Текущий пользователь
       responses:
@@ -400,8 +457,11 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/auth/sessions:
     get:
+      operationId: getAuthSessions
       tags: [Auth, Sessions]
       summary: Активные сессии (устройства) пользователя
       description: |
@@ -420,8 +480,11 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/auth/sessions/{sessionID}:
     delete:
+      operationId: deleteAuthSessionsSessionID
       tags: [Auth, Sessions]
       summary: Завершить свою сессию
       description: |
@@ -437,11 +500,17 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/users/{id}:
     get:
+      operationId: getUsersId
       tags: [Users]
       summary: Публичный профиль пользователя
-      description: Чужой телефон маскируется, email скрывается.
+      description: |
+        Для чужого профиля возвращается `PublicUser`: только ID, display_name и
+        маскированный телефон. Свой профиль и профиль для admin возвращаются
+        полностью (без password_hash).
       parameters:
         - $ref: '#/components/parameters/ID'
       responses:
@@ -450,14 +519,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DataUser'
+                oneOf:
+                  - $ref: '#/components/schemas/DataUser'
+                  - $ref: '#/components/schemas/DataPublicUser'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/users/me:
     patch:
+      operationId: patchUsersMe
       tags: [Users]
       summary: Обновить профиль
       requestBody:
@@ -479,7 +553,10 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     delete:
+      operationId: deleteUsersMe
       tags: [Users]
       summary: Удалить аккаунт
       description: Каскадно удаляет контакты, токены и репорты.
@@ -489,8 +566,11 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/users/me/password:
     put:
+      operationId: putUsersMePassword
       tags: [Users]
       summary: Сменить пароль
       description: Отзывает все активные refresh-сессии.
@@ -508,8 +588,11 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/users/me/stats:
     get:
+      operationId: getUsersMeStats
       tags: [Users]
       summary: Личная статистика
       description: |
@@ -529,6 +612,7 @@ paths:
 
   /api/v1/contacts:
     get:
+      operationId: getContacts
       tags: [Contacts]
       summary: Список контактов
       parameters:
@@ -545,7 +629,10 @@ paths:
                 $ref: '#/components/schemas/PaginatedContacts'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     post:
+      operationId: postContacts
       tags: [Contacts]
       summary: Создать контакт
       requestBody:
@@ -568,8 +655,11 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/contacts/import:
     post:
+      operationId: postContactsImport
       tags: [Contacts]
       summary: Массовый импорт контактов
       description: До 500 контактов за запрос, upsert по паре (owner, phone).
@@ -591,10 +681,13 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/contacts/{id}:
     parameters:
       - $ref: '#/components/parameters/ID'
     get:
+      operationId: getContactsId
       tags: [Contacts]
       summary: Получить контакт
       responses:
@@ -608,7 +701,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     patch:
+      operationId: patchContactsId
       tags: [Contacts]
       summary: Изменить контакт
       requestBody:
@@ -632,7 +728,10 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     delete:
+      operationId: deleteContactsId
       tags: [Contacts]
       summary: Удалить контакт
       responses:
@@ -643,8 +742,11 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/numbers/spam/top:
     get:
+      operationId: getNumbersSpamTop
       tags: [Numbers]
       summary: Топ спам-номеров
       security: []
@@ -662,6 +764,7 @@ paths:
 
   /api/v1/numbers/trending:
     get:
+      operationId: getNumbersTrending
       tags: [Numbers]
       summary: Тренды по просмотрам
       description: Номера с наибольшим счётчиком lookup за всё время.
@@ -680,6 +783,7 @@ paths:
 
   /api/v1/numbers/lookup:
     post:
+      operationId: postNumbersLookup
       tags: [Numbers]
       summary: Пакетный caller-ID lookup
       description: |
@@ -710,6 +814,7 @@ paths:
 
   /api/v1/spam/categories:
     get:
+      operationId: getSpamCategories
       tags: [Numbers]
       summary: Каталог категорий спама
       description: Единый источник допустимых значений для POST /numbers/{phone}/spam.
@@ -726,6 +831,7 @@ paths:
 
   /api/v1/numbers/{phone}:
     get:
+      operationId: getNumbersPhone
       tags: [Numbers]
       summary: Caller-ID lookup
       description: |
@@ -752,6 +858,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/Phone'
     get:
+      operationId: getNumbersPhoneTags
       tags: [Numbers]
       summary: Теги номера
       security: []
@@ -764,7 +871,10 @@ paths:
                 $ref: '#/components/schemas/DataTags'
         '422':
           $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     post:
+      operationId: postNumbersPhoneTags
       tags: [Numbers]
       summary: Добавить тег
       description: Повторный тег увеличивает его weight и пересчитывает spam score.
@@ -788,8 +898,11 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/numbers/{phone}/tags/{tagID}:
     delete:
+      operationId: deleteNumbersPhoneTagsTagID
       tags: [Numbers]
       summary: Удалить тег
       description: Доступно автору тега или администратору.
@@ -806,10 +919,13 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/numbers/{phone}/names:
     parameters:
       - $ref: '#/components/parameters/Phone'
     get:
+      operationId: getNumbersPhoneNames
       tags: [Numbers]
       summary: Имена номера из сообщества
       description: Агрегированные варианты имени, отсортированные по числу голосов.
@@ -826,6 +942,7 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
     post:
+      operationId: postNumbersPhoneNames
       tags: [Numbers]
       summary: Предложить имя для номера
       description: |
@@ -856,6 +973,7 @@ paths:
 
   /api/v1/numbers/{phone}/names/{nameID}:
     delete:
+      operationId: deleteNumbersPhoneNamesNameID
       tags: [Numbers]
       summary: Удалить голос за имя
       description: Доступно автору голоса или администратору.
@@ -872,10 +990,13 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/numbers/{phone}/spam:
     parameters:
       - $ref: '#/components/parameters/Phone'
     get:
+      operationId: getNumbersPhoneSpam
       tags: [Numbers]
       summary: Сводка спам-репортов
       description: Агрегаты по категориям без раскрытия авторов репортов.
@@ -892,6 +1013,7 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
     post:
+      operationId: postNumbersPhoneSpam
       tags: [Numbers]
       summary: Пожаловаться на спам
       description: Один активный репорт на пользователя и номер. Повтор → 409.
@@ -918,8 +1040,11 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/tags:
     get:
+      operationId: getTags
       tags: [Numbers]
       summary: Каталог популярных тегов
       security: []
@@ -933,8 +1058,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/DataTagCounts'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/search:
     get:
+      operationId: getSearch
       tags: [Search]
       summary: Поиск по номерам и контактам
       description: Ищет по номеру/имени в общем справочнике и в личной книге.
@@ -953,8 +1081,11 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/stats:
     get:
+      operationId: getAdminStats
       tags: [Admin]
       summary: Сводная статистика
       responses:
@@ -969,8 +1100,11 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/users:
     get:
+      operationId: getAdminUsers
       tags: [Admin]
       summary: Список пользователей
       parameters:
@@ -989,8 +1123,11 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/users/{id}:
     get:
+      operationId: getAdminUsersId
       tags: [Admin]
       summary: Пользователь по ID
       parameters:
@@ -1008,7 +1145,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     delete:
+      operationId: deleteAdminUsersId
       tags: [Admin]
       summary: Удалить пользователя
       parameters:
@@ -1025,8 +1165,11 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/users/{id}/block:
     patch:
+      operationId: patchAdminUsersIdBlock
       tags: [Admin]
       summary: Блокировка / разблокировка
       description: При блокировке отзываются все refresh-сессии пользователя.
@@ -1054,8 +1197,11 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/reports:
     get:
+      operationId: getAdminReports
       tags: [Admin]
       summary: Очередь спам-репортов
       parameters:
@@ -1073,8 +1219,11 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/reports/{reportID}:
     delete:
+      operationId: deleteAdminReportsReportID
       tags: [Admin]
       summary: Удалить спам-репорт
       description: |
@@ -1092,10 +1241,13 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/numbers/{phone}:
     parameters:
       - $ref: '#/components/parameters/Phone'
     get:
+      operationId: getAdminNumbersPhone
       tags: [Admin]
       summary: Полное досье номера
       description: |
@@ -1117,7 +1269,10 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Validation'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     patch:
+      operationId: patchAdminNumbersPhone
       tags: [Admin]
       summary: Редактировать профиль номера
       description: |
@@ -1150,8 +1305,11 @@ paths:
         '422':
           $ref: '#/components/responses/Validation'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/audit:
     get:
+      operationId: getAdminAudit
       tags: [Admin]
       summary: Лента аудита
       description: |
@@ -1175,8 +1333,11 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/users/{id}/summary:
     get:
+      operationId: getAdminUsersIdSummary
       tags: [Admin]
       summary: Полная карточка пользователя
       description: |
@@ -1197,8 +1358,11 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/v1/admin/users/{id}/sessions:
     get:
+      operationId: getAdminUsersIdSessions
       tags: [Admin, Sessions]
       summary: Сессии пользователя (только для администратора)
       description: |
@@ -1219,7 +1383,44 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    delete:
+      operationId: deleteAdminUsersIdSessions
+      tags: [Admin, Sessions]
+      summary: Завершить все сессии пользователя
+      description: |
+        Отзывает все refresh-сессии выбранного пользователя и блокирует связанные
+        access-токены. Администратор не может применить операцию к себе.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Сколько сессий завершено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      user_id:
+                        type: string
+                        format: uuid
+                      revoked:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
+        '429':
+          $ref: '#/components/responses/RateLimited'
 components:
   securitySchemes:
     bearerAuth:
@@ -1327,6 +1528,7 @@ components:
       schema:
         type: integer
         minimum: 1
+        maximum: 1000000
         default: 1
     PerPage:
       name: per_page
@@ -1446,6 +1648,19 @@ components:
       properties:
         code:
           type: string
+          enum:
+            - BAD_REQUEST
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - USER_BLOCKED
+            - NOT_FOUND
+            - CONFLICT
+            - VALIDATION_ERROR
+            - RATE_LIMITED
+            - INTERNAL_ERROR
+            - EMAIL_DISABLED
+            - AUTH_UNAVAILABLE
+            - REQUEST_TIMEOUT
           example: VALIDATION_ERROR
         message:
           type: string
@@ -1580,6 +1795,21 @@ components:
           type: string
           format: date-time
 
+    PublicUser:
+      type: object
+      description: |
+        Публичное представление чужого профиля. Не содержит email, роли,
+        статуса блокировки и флагов подтверждения; телефон маскируется.
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        phone:
+          type: string
+          example: "+7999***4567"
+
     DeviceInfo:
       type: object
       description: |
@@ -1648,7 +1878,9 @@ components:
           format: password
           minLength: 8
           maxLength: 128
-          description: Минимум одна буква и одна цифра.
+          description: |
+            8..128 Unicode-символов, минимум одна буква и одна цифра.
+            Ограничение по длине считается в рунах, а не в байтах.
         display_name:
           type: string
           minLength: 2
@@ -2364,6 +2596,11 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/User'
+    DataPublicUser:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PublicUser'
     DataContact:
       type: object
       properties:

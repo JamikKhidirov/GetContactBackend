@@ -162,6 +162,22 @@ func (a *API) adminUserSessions(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{"user_id": id, "sessions": sessions, "total": len(sessions)})
 }
 
+// adminRevokeUserSessions ends every session of a user.
+func (a *API) adminRevokeUserSessions(w http.ResponseWriter, r *http.Request) {
+	actor, _ := userIDFrom(r.Context())
+	id, err := pathUUID(r, "id")
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	revoked, err := a.admin.RevokeUserSessions(r.Context(), actor, id)
+	if err != nil {
+		writeError(w, r, a.log, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{"user_id": id, "revoked": revoked})
+}
+
 func (a *API) adminDeleteReport(w http.ResponseWriter, r *http.Request) {
 	actor, _ := userIDFrom(r.Context())
 	id, err := pathUUID(r, "reportID")

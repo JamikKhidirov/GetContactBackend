@@ -14,6 +14,7 @@ import (
 	"github.com/getcontact/backend/internal/events"
 	"github.com/getcontact/backend/internal/metrics"
 	"github.com/getcontact/backend/internal/platform"
+	rediscache "github.com/getcontact/backend/internal/repository/redis"
 	"github.com/google/uuid"
 )
 
@@ -54,6 +55,7 @@ type EmailAuthService struct {
 	users domain.UserRepository
 	repo  domain.EmailRepository
 	auth  *AuthService
+	cache *rediscache.Cache
 	log   *slog.Logger
 }
 
@@ -64,9 +66,10 @@ func NewEmailAuthService(
 	users domain.UserRepository,
 	repo domain.EmailRepository,
 	auth *AuthService,
+	cache *rediscache.Cache,
 	log *slog.Logger,
 ) *EmailAuthService {
-	return &EmailAuthService{cfg: cfg, env: env, users: users, repo: repo, auth: auth, log: log}
+	return &EmailAuthService{cfg: cfg, env: env, users: users, repo: repo, auth: auth, cache: cache, log: log}
 }
 
 // RequestCode creates a code and writes the delivery event atomically. Even if
@@ -87,6 +90,21 @@ func (s *EmailAuthService) RequestCode(ctx context.Context, in RequestCodeInput)
 	default:
 		metrics.EmailRequests.WithLabelValues(purpose, "invalid").Inc()
 		return nil, apperr.Invalid(map[string]string{"purpose": "must be signup, login or verify_email"})
+	}
+
+	// A cross-instance cooldown keyed by address and purpose applies to every
+	// address, including ones without an account. Without it, an attacker could
+	// probe unlimited unknown addresses and use response timing/email receipt as
+	// an account-existence oracle.
+	if s.cache != nil && s.cfg.Cooldown > 0 {
+		key := "gc:email:cooldown:" + purpose + ":" + email
+		ok, err := s.cache.SetNX(ctx, key, 1, s.cfg.Cooldown)
+		if err != nil {
+			s.log.Warn("email cooldown unavailable", "error", err)
+		} else if !ok {
+			metrics.EmailRequests.WithLabelValues(purpose, "cooldown").Inc()
+			return nil, apperr.TooManyRequests()
+		}
 	}
 
 	var userID *uuid.UUID
@@ -200,7 +218,7 @@ func (s *EmailAuthService) LoginWithCode(ctx context.Context, email, code string
 	}
 	if user.IsBlocked {
 		metrics.EmailVerifyAttempts.WithLabelValues(EmailPurposeLogin, "blocked").Inc()
-		return nil, apperr.Forbidden("user is blocked")
+		return nil, apperr.Blocked()
 	}
 	if !user.EmailVerified {
 		// A successful email login is itself proof of ownership.

@@ -145,6 +145,11 @@ AES-GCM-шифртекст для воркера. API в одной транза
 Gmail App Password, Mailtrap, Resend, Brevo или любой SMTP. Для Gmail включите
 2FA и создайте App Password, обычный пароль аккаунта не подойдёт.
 
+Назначения кода: `signup` (подтвердить email при регистрации), `login`
+(вход без пароля) и `verify_email` (подтвердить адрес в авторизованной сессии).
+Ответ одинаков для существующих и несуществующих адресов, а cooldown
+применяется ко всем адресам.
+
 ```bash
 # Реальная отправка через Gmail SMTP
 EMAIL_PROVIDER=smtp \
@@ -153,6 +158,16 @@ SMTP_HOST=smtp.gmail.com SMTP_PORT=587 \
 SMTP_USERNAME=you@gmail.com SMTP_PASSWORD='your-app-password' \
 docker compose -f deploy/docker/docker-compose.yml up -d --build
 ```
+
+### Сеть, прокси и лимиты
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `TRUSTED_PROXIES` | пусто | CIDR/IP прокси, от которых принимаются `X-Forwarded-For`/`X-Real-IP` |
+| `RATE_LIMIT_ENABLED` | `true` | Включить Redis rate limit |
+| `RATE_LIMIT_PUBLIC_RPM` | `120` | Лимит public и authenticated-user запросов в минуту на IP |
+| `RATE_LIMIT_AUTH_RPM` | `20` | Лимит register/login/refresh/email-code в минуту на IP |
+| `RATE_LIMIT_WINDOW` | `1m` | Окно fixed-window лимитера |
 
 ---
 
@@ -239,22 +254,28 @@ sequenceDiagram
     A->>P: INSERT refresh_token (SHA-256 hash)
     A-->>C: access JWT (15m) + refresh (30d, single-use)
     C->>A: GET /auth/me (Bearer access)
-    A->>R: EXISTS auth:deny:{jti}
+    A->>P: SELECT user (token_version, is_blocked)
+    A->>R: EXISTS auth:deny:{jti} / auth:deny:sid:{sid}
     A-->>C: 200 profile
     C->>A: POST /auth/refresh {refresh_token}
-    A->>P: revoke old + issue new pair (rotation)
+    A->>P: atomic UPDATE ... RETURNING (single-use rotation)
     C->>A: POST /auth/logout
     A->>R: SET auth:deny:{jti} TTL=remaining
-    A->>P: revoke refresh
+    A->>P: revoke refresh (only if owned by caller)
 ```
 
-- **Пароли** — argon2id (64 MiB, t=3, p=2), PHC-формат.
-- **Access JWT** — HS256, 15 минут, `sub` + `role` + `jti` + `sid` (id сессии).
-- **Refresh** — 32 случайных байта, в БД только SHA-256, ротация при каждом refresh.
-- **Logout** — refresh отзывается, access JTI и `sid` попадают в Redis blacklist до истечения.
-- **Блокировка** — отзывает все refresh-сессии пользователя.
+- **Пароли** — argon2id (64 MiB, t=3, p=2), PHC-формат; длина считается в рунах.
+- **Access JWT** — HS256, 15 минут, `sub` + `role` + `jti` + `sid` + `ver`.
+- **Версия токена** — `users.token_version`; блокировка, смена пароля и смена
+  роли бампают её, поэтому уже выданные access-токены отклоняются сразу.
+- **Refresh** — 32 случайных байта, в БД только SHA-256, атомарная ротация.
+- **Logout** — refresh отзывается только у владельца; access JTI и `sid` попадают
+  в Redis blacklist. `POST /auth/logout/all` завершает все устройства.
+- **Блокировка** — отзывает все refresh-сессии и инвалидирует access-токены.
 - **Rate limit** — Redis fixed window: auth 20/мин, public/user 120/мин на IP.
-  При недоступности Redis лимитер **fail-open**, чтобы кэш не ронял API.
+  При недоступности Redis лимитер **fail-open**, чтобы кэш не ронял API, но
+  проверка denylist при обязательной аутентификации **fail-closed** (`503`).
+- **IP** — `X-Forwarded-For`/`X-Real-IP` принимаются только от `TRUSTED_PROXIES`.
 
 ### Метаданные устройства и сессии
 
@@ -266,11 +287,13 @@ sequenceDiagram
 |---|---|
 | Заголовки | `X-Device-Id`, `X-Device-Name`, `X-Device-Model`, `X-Device-Manufacturer`, `X-OS`, `X-OS-Version`, `X-App-Version`, `X-App-Build`, `X-Client`, `X-Locale`, `X-Timezone`, `X-Network-Type` |
 | JSON `device` | `id`, `name`, `model`, `manufacturer`, `os`, `os_version`, `app_version`, `app_build`, `client`, `locale`, `timezone`, `network_type` |
-| Автоматически | IP (с учётом `X-Forwarded-For` / `X-Real-IP`), `User-Agent`, время входа и последней активности |
+| Автоматически | IP (с учётом `X-Forwarded-For` / `X-Real-IP` только от `TRUSTED_PROXIES`), `User-Agent`, время входа и последней активности |
 
 Пользователь видит свои активные сессии и может завершить любую из них
-(`GET/DELETE /api/v1/auth/sessions`). Администратор видит сессии любого
-пользователя в `/api/v1/admin/users/{id}/summary` и `/sessions`.
+(`GET/DELETE /api/v1/auth/sessions` или `POST /api/v1/auth/logout/all`).
+Администратор видит сессии любого пользователя в
+`/api/v1/admin/users/{id}/summary` и `/sessions`, а
+`DELETE /api/v1/admin/users/{id}/sessions` завершает их все.
 Завершение сессии мгновенно инвалидирует её access-токены через Redis.
 
 ---
@@ -299,10 +322,11 @@ sequenceDiagram
 |---|---|---|---|
 | `POST` | `/api/v1/auth/register` | 🔓 | Регистрация + выдача токенов; опционально `email_code` |
 | `POST` | `/api/v1/auth/login` | 🔓 | Вход по телефону/паролю |
-| `POST` | `/api/v1/auth/email/code` | 🔓 | Одноразовый код на email (`signup` / `login`) |
+| `POST` | `/api/v1/auth/email/code` | 🔓 / 🔑 | Одноразовый код (`signup`/`login` публично, `verify_email` — с токеном) |
 | `POST` | `/api/v1/auth/email/login` | 🔓 | Вход по email + коду |
-| `POST` | `/api/v1/auth/refresh` | 🔓 | Ротация refresh-токена |
-| `POST` | `/api/v1/auth/logout` | 🔑 | Отзыв refresh + blacklist access |
+| `POST` | `/api/v1/auth/refresh` | 🔓 | Атомарная ротация refresh-токена |
+| `POST` | `/api/v1/auth/logout` | 🔑 | Отзыв своего refresh + blacklist access |
+| `POST` | `/api/v1/auth/logout/all` | 🔑 | Завершить все сессии аккаунта |
 | `GET` | `/api/v1/auth/me` | 🔑 | Текущий профиль |
 | `GET` | `/api/v1/auth/sessions` | 🔑 | Свои активные сессии и устройства |
 | `DELETE` | `/api/v1/auth/sessions/{sessionID}` | 🔑 | Завершить свою сессию |
@@ -364,6 +388,7 @@ BOM и zero-width символы вырезаются, результат все
 | `GET` | `/api/v1/admin/users/{id}` | 👑 | Пользователь по ID |
 | `GET` | `/api/v1/admin/users/{id}/summary` | 👑 | Профиль + активность + сессии + аудит |
 | `GET` | `/api/v1/admin/users/{id}/sessions` | 👑 | Активные устройства пользователя |
+| `DELETE` | `/api/v1/admin/users/{id}/sessions` | 👑 | Завершить все сессии пользователя |
 | `PATCH` | `/api/v1/admin/users/{id}/block` | 👑 | Блокировка/разблокировка |
 | `DELETE` | `/api/v1/admin/users/{id}` | 👑 | Удалить пользователя |
 | `GET` | `/api/v1/admin/reports` | 👑 | Очередь спам-репортов |
@@ -527,7 +552,11 @@ Recording rules лежат в `deploy/docker/prometheus/rules.yml` и в Kuberne
 Типы событий:
 
 - `user.registered`
+- `user.logged_in`
+- `user.email_login`
+- `user.email_verified`
 - `user.blocked`
+- `user.session_revoked`
 - `contact.created`
 - `number.looked_up`
 - `number.tag_added`
@@ -537,6 +566,9 @@ Recording rules лежат в `deploy/docker/prometheus/rules.yml` и в Kuberne
 - `number.spam_deleted`
 - `admin.number_viewed`
 - `admin.number_updated`
+- `email.code_requested` (payload содержит только `verification_id`, без кода)
+- `email.delivered`
+- `email.delivery_failed`
 
 Событие — JSON-конверт с `id`, `type`, `version`, `occurred_at`, `aggregate_id`, `payload`.
 Worker пишет его в `audit_events` c `ON CONFLICT (id) DO NOTHING` (идемпотентность),

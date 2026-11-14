@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "c34b54ee-75c5-4c9b-9067-865b82dd3e66",
+    "_postman_id": "db03651c-2781-484e-961e-c68fafe798d8",
     "name": "GetContact API",
     "description": "Полная коллекция GetContact API.\n\n1. Запустите `docker compose -f deploy/docker/docker-compose.yml up -d --build`.\n2. Выберите окружение `GetContact Local`.\n3. Выполните **Auth → Register** (или Login) — токены сохранятся автоматически.\n4. Остальные запросы используют `{{accessToken}}`.\n\nAdmin-запросы используют `{{adminAccessToken}}` (Admin → Login).\nПапка **99 Destructive** удаляет данные — запускайте осознанно.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -1003,6 +1003,55 @@
                 "exec": [
                   "pm.test('status is 204', () => pm.response.to.have.status(204));",
                   "pm.collectionVariables.set('sessionId', '');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout all devices",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout/all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout",
+                "all"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Завершает все сессии аккаунта и блокирует связанные access-токены."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.collectionVariables.set('accessToken', '');",
+                  "pm.collectionVariables.set('refreshToken', '');"
                 ]
               }
             }
@@ -2505,6 +2554,56 @@
             },
             "description": "Активные устройства пользователя: IP, модель, ОС и версия приложения."
           }
+        },
+        {
+          "name": "Revoke all user sessions",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users/{{userId}}/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "users",
+                "{{userId}}",
+                "sessions"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Завершает все сессии выбранного пользователя. Нельзя применить к себе."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('revoked count present', () => pm.expect(json.data.revoked).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "Spam report queue",

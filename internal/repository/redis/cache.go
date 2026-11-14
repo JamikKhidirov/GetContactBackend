@@ -155,10 +155,14 @@ func (c *Cache) DenyAccessToken(ctx context.Context, jti string, ttl time.Durati
 	return c.client.Set(ctx, denyKey(jti), "1", ttl).Err()
 }
 
-// IsAccessTokenDenied reports whether a token was revoked by logout.
-func (c *Cache) IsAccessTokenDenied(ctx context.Context, jti string) bool {
+// IsAccessTokenDenied reports whether a token was revoked by logout. The
+// second return value lets authentication fail closed when Redis is down.
+func (c *Cache) IsAccessTokenDenied(ctx context.Context, jti string) (bool, error) {
 	n, err := c.client.Exists(ctx, denyKey(jti)).Result()
-	return err == nil && n > 0
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // DenySession invalidates every access token bound to a revoked refresh session.
@@ -169,13 +173,17 @@ func (c *Cache) DenySession(ctx context.Context, sessionID string, ttl time.Dura
 	return c.client.Set(ctx, denySessionKey(sessionID), "1", ttl).Err()
 }
 
-// IsSessionDenied reports whether the session was explicitly revoked.
-func (c *Cache) IsSessionDenied(ctx context.Context, sessionID string) bool {
+// IsSessionDenied reports whether the session was explicitly revoked. The
+// second return value lets authentication fail closed when Redis is down.
+func (c *Cache) IsSessionDenied(ctx context.Context, sessionID string) (bool, error) {
 	if sessionID == "" {
-		return false
+		return false, nil
 	}
 	n, err := c.client.Exists(ctx, denySessionKey(sessionID)).Result()
-	return err == nil && n > 0
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func denyKey(jti string) string { return "auth:deny:" + jti }

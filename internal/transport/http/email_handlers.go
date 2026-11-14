@@ -28,7 +28,7 @@ func (a *API) requestEmailCode(w http.ResponseWriter, r *http.Request) {
 		userID = &uid
 	}
 	in := service.RequestCodeInput{
-		Email: req.Email, Purpose: req.Purpose, Meta: metaFrom(r, req.Device),
+		Email: req.Email, Purpose: req.Purpose, Meta: a.metaFrom(r, req.Device),
 	}
 	if userID != nil {
 		in.UserID = userID
@@ -54,7 +54,7 @@ func (a *API) emailLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, a.log, err)
 		return
 	}
-	res, err := a.email.LoginWithCode(r.Context(), req.Email, req.Code, metaFrom(r, req.Device))
+	res, err := a.email.LoginWithCode(r.Context(), req.Email, req.Code, a.metaFrom(r, req.Device))
 	if err != nil {
 		writeError(w, r, a.log, err)
 		return
@@ -94,7 +94,7 @@ func (a *API) requestEmailVerification(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := a.email.RequestCode(r.Context(), service.RequestCodeInput{
 		Email: email, Purpose: service.EmailPurposeVerifyEmail, UserID: &uid,
-		Meta: metaFrom(r, req.Device),
+		Meta: a.metaFrom(r, req.Device),
 	})
 	if err != nil {
 		writeError(w, r, a.log, err)

@@ -17,6 +17,8 @@ import (
 )
 
 // authenticate validates the Bearer JWT and stores claims in the request context.
+// It also reloads the user so blocking, deletion, a password change or a role
+// change takes effect immediately instead of waiting for the access-token TTL.
 func (a *API) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := bearerToken(r)
@@ -29,15 +31,38 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 			writeError(w, r, a.log, apperr.Unauthorized("invalid or expired access token"))
 			return
 		}
-		if a.cache.IsAccessTokenDenied(r.Context(), claims.ID) {
+		denied, err := a.cache.IsAccessTokenDenied(r.Context(), claims.ID)
+		if err != nil {
+			writeError(w, r, a.log, apperr.ServiceUnavailable("AUTH_UNAVAILABLE", "authentication temporarily unavailable"))
+			return
+		}
+		if denied {
 			writeError(w, r, a.log, apperr.Unauthorized("access token has been revoked"))
 			return
 		}
-		if a.cache.IsSessionDenied(r.Context(), claims.SessionID) {
+		denied, err = a.cache.IsSessionDenied(r.Context(), claims.SessionID)
+		if err != nil {
+			writeError(w, r, a.log, apperr.ServiceUnavailable("AUTH_UNAVAILABLE", "authentication temporarily unavailable"))
+			return
+		}
+		if denied {
 			writeError(w, r, a.log, apperr.Unauthorized("session has been revoked"))
 			return
 		}
-		ctx := withClaims(r.Context(), claims.UserID(), roleFromClaims(claims.Role), claims.ID, claims.SessionID, claims.ExpiresAt.Time)
+		user, err := a.userRepo.GetByID(r.Context(), claims.UserID())
+		if err != nil {
+			writeError(w, r, a.log, apperr.Unauthorized("invalid or expired access token"))
+			return
+		}
+		if user.IsBlocked {
+			writeError(w, r, a.log, apperr.Blocked())
+			return
+		}
+		if claims.TokenVersion != user.TokenVersion {
+			writeError(w, r, a.log, apperr.Unauthorized("access token has been revoked"))
+			return
+		}
+		ctx := withClaims(r.Context(), user.ID, user.Role, claims.ID, claims.SessionID, claims.ExpiresAt.Time)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -52,11 +77,26 @@ func (a *API) optionalAuth(next http.Handler) http.Handler {
 			return
 		}
 		claims, err := a.tokens.Parse(raw)
-		if err != nil || a.cache.IsAccessTokenDenied(r.Context(), claims.ID) || a.cache.IsSessionDenied(r.Context(), claims.SessionID) {
+		if err != nil {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ctx := withClaims(r.Context(), claims.UserID(), roleFromClaims(claims.Role), claims.ID, claims.SessionID, claims.ExpiresAt.Time)
+		denied, err := a.cache.IsAccessTokenDenied(r.Context(), claims.ID)
+		if err != nil || denied {
+			next.ServeHTTP(w, r)
+			return
+		}
+		denied, err = a.cache.IsSessionDenied(r.Context(), claims.SessionID)
+		if err != nil || denied {
+			next.ServeHTTP(w, r)
+			return
+		}
+		user, err := a.userRepo.GetByID(r.Context(), claims.UserID())
+		if err != nil || user.IsBlocked || claims.TokenVersion != user.TokenVersion {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ctx := withClaims(r.Context(), user.ID, user.Role, claims.ID, claims.SessionID, claims.ExpiresAt.Time)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -99,7 +139,7 @@ func (a *API) rateLimit(scope string, limit int) func(http.Handler) http.Handler
 	window := a.cfg.Rate.Window
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r)
+			ip := a.clientIP(r)
 			count, err := a.cache.Incr(r.Context(), "gc:rl:"+scope+":"+ip, window)
 			if err != nil {
 				a.log.Warn("rate limiter unavailable, failing open", "error", err)
@@ -152,7 +192,7 @@ func (a *API) observability(next http.Handler) http.Handler {
 			"status", status,
 			"bytes", ww.BytesWritten(),
 			"duration_ms", time.Since(start).Milliseconds(),
-			"ip", clientIP(r),
+			"ip", a.clientIP(r),
 			"request_id", middleware.GetReqID(r.Context()),
 			"user_id", userIDString(r.Context()),
 		)
@@ -250,21 +290,65 @@ func (a *API) requestTimeout(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns the caller IP, honouring the standard proxy headers used by
-// the Docker/Kubernetes ingress so rate limiting and session metadata see the
-// real mobile client instead of the proxy address.
-func clientIP(r *http.Request) string {
-	if ip := firstForwardedIP(r.Header.Get("X-Forwarded-For")); ip != "" {
-		return ip
+// clientIP returns the caller IP. Proxy headers are only honoured when the
+// direct peer is a configured trusted proxy, so an arbitrary client cannot
+// spoof X-Forwarded-For to dodge rate limits or poison session metadata.
+func (a *API) clientIP(r *http.Request) string {
+	remote := remoteIP(r.RemoteAddr)
+	if len(a.trusted) > 0 && a.isTrustedProxy(remote) {
+		if ip := firstForwardedIP(r.Header.Get("X-Forwarded-For")); ip != "" {
+			return ip
+		}
+		if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(ip) != nil {
+			return ip
+		}
 	}
-	if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(ip) != nil {
-		return ip
+	return remote
+}
+
+func (a *API) isTrustedProxy(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	for _, network := range a.trusted {
+		if network.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return remoteAddr
 	}
 	return host
+}
+
+// parseTrustedProxies converts CIDR strings into networks. Plain IPs are
+// accepted as single-host networks. Invalid entries are ignored.
+func parseTrustedProxies(values []string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, network, err := net.ParseCIDR(value); err == nil {
+			out = append(out, network)
+			continue
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return out
 }
 
 // firstForwardedIP parses the left-most valid address of an X-Forwarded-For

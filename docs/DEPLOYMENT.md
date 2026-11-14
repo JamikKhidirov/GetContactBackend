@@ -33,11 +33,11 @@ Go-модули не требуют CGO. Бинарники статически
 |---|---|---|---|
 | `DATABASE_URL` | да | `postgres://getcontact:pass@postgres:5432/getcontact?sslmode=disable` | pgx DSN |
 | `REDIS_ADDR` | да | `redis:6379` | хост:порт |
-| `JWT_SECRET` | да | 32+ случайных символа | в production короче 32 → сервис не стартует |
+| `JWT_SECRET` | да | 32+ случайных символа | placeholder или короче 32 → сервис не стартует в production |
 | `KAFKA_BROKERS` | да | `kafka:9092` | через запятую |
-| `EMAIL_CODE_SECRET` | при email | 32+ случайных символа | HMAC + AES-GCM ключ; в production dev-значение запрещено |
+| `EMAIL_CODE_SECRET` | при email | 32+ случайных символа | HMAC + AES-GCM ключ; placeholder/dev-значение запрещено в production |
 | `SMTP_HOST` / `SMTP_USERNAME` / `SMTP_PASSWORD` | при `EMAIL_PROVIDER=smtp` | `smtp.gmail.com` / адрес / app password | свободный SMTP |
-| `ADMIN_PHONE` / `ADMIN_PASSWORD` | нет | `+79990000000` / `Admin12345` | bootstrap админа |
+| `ADMIN_PHONE` / `ADMIN_PASSWORD` | нет | `+79990000000` / `Admin12345` | bootstrap админа; в production пароль 12+ и не placeholder |
 
 ### Тюнинг
 
@@ -54,8 +54,10 @@ Go-модули не требуют CGO. Бинарники статически
 | `ARGON2_MEMORY_KB` | `65536` | 64 MiB |
 | `ARGON2_ITERATIONS` | `3` | |
 | `RATE_LIMIT_ENABLED` | `true` | |
-| `RATE_LIMIT_PUBLIC_RPM` | `120` | публичные запросы/мин/IP |
+| `RATE_LIMIT_PUBLIC_RPM` | `120` | публичные и authenticated-user запросы/мин/IP |
 | `RATE_LIMIT_AUTH_RPM` | `20` | auth-запросы/мин/IP |
+| `RATE_LIMIT_WINDOW` | `1m` | окно лимитера |
+| `TRUSTED_PROXIES` | пусто | CIDR/IP прокси, от которых доверяются `X-Forwarded-For`/`X-Real-IP` |
 | `KAFKA_ENABLED` | `true` | `false` отключает producer/consumer |
 | `EMAIL_ENABLED` | `true` | включает OTP-аутентификацию |
 | `EMAIL_PROVIDER` | `log` | `log` (локально) или `smtp`; в production только `smtp` |
@@ -144,10 +146,10 @@ Compose использует два listener'а:
 
 ```bash
 # 1. Образы
-docker build -f deploy/docker/Dockerfile --target api    -t ghcr.io/your-org/getcontact-api:1.1.0    .
-docker build -f deploy/docker/Dockerfile --target worker -t ghcr.io/your-org/getcontact-worker:1.1.0 .
-docker push ghcr.io/your-org/getcontact-api:1.1.0
-docker push ghcr.io/your-org/getcontact-worker:1.1.0
+docker build -f deploy/docker/Dockerfile --target api    -t ghcr.io/your-org/getcontact-api:1.2.0    .
+docker build -f deploy/docker/Dockerfile --target worker -t ghcr.io/your-org/getcontact-worker:1.2.0 .
+docker push ghcr.io/your-org/getcontact-api:1.2.0
+docker push ghcr.io/your-org/getcontact-worker:1.2.0
 
 # 2. Namespace + секреты
 kubectl apply -f deploy/k8s/00-namespace.yaml
@@ -189,14 +191,17 @@ kubectl -n getcontact port-forward svc/api 8080:80
   egress api/worker только к Postgres/Redis/Kafka.
 - ServiceMonitor'ы помечены `release: kube-prometheus-stack` — измените label,
   если ваш Prometheus Operator использует другой селектор.
+- `deploy/k8s/01-config.yaml` и `05-api.yaml` содержат `CHANGE_ME_*`.
+  Production-конфиг намеренно не стартует с такими значениями: задайте
+  `JWT_SECRET`, `EMAIL_CODE_SECRET`, `ADMIN_PASSWORD` и SMTP-пароль явно.
 
 ### Образы
 
 В манифестах стоит placeholder:
 
 ```text
-ghcr.io/your-org/getcontact-api:1.1.0
-ghcr.io/your-org/getcontact-worker:1.1.0
+ghcr.io/your-org/getcontact-api:1.2.0
+ghcr.io/your-org/getcontact-worker:1.2.0
 ```
 
 Замените на свой registry. Для приватного registry добавьте `imagePullSecrets`:
@@ -232,7 +237,7 @@ kubectl -n getcontact patch serviceaccount default \
 - [ ] API: ≥ 2 реплик, HPA, PDB, topologySpreadConstraints по зонам.
 - [ ] Worker: ≥ 1 реплика; consumer group сам балансирует партиции.
 - [ ] Probes настроены, `terminationGracePeriodSeconds ≥ shutdown timeout`.
-- [ ] Alembic-подобные миграции выполняются под advisory lock (уже реализовано).
+- [ ] Встроенный мигратор применяет `migrations/*.sql` под advisory lock (уже реализовано).
 
 ### Наблюдаемость
 
@@ -272,11 +277,11 @@ Postgres и Redis в `deploy/k8s` — single-instance baseline. Для нагр�
 
 ```bash
 # Сборка новой версии
-docker build -f deploy/docker/Dockerfile --target api -t ghcr.io/your-org/getcontact-api:1.0.1 .
-docker push ghcr.io/your-org/getcontact-api:1.0.1
+docker build -f deploy/docker/Dockerfile --target api -t ghcr.io/your-org/getcontact-api:1.2.0 .
+docker push ghcr.io/your-org/getcontact-api:1.2.0
 
 # Обновление
-kubectl -n getcontact set image deploy/api api=ghcr.io/your-org/getcontact-api:1.0.1
+kubectl -n getcontact set image deploy/api api=ghcr.io/your-org/getcontact-api:1.2.0
 kubectl -n getcontact rollout status deploy/api
 
 # Откат

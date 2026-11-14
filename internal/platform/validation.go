@@ -13,18 +13,26 @@ var (
 	tagRe   = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} _\-]{1,31}$`)
 )
 
-// ValidatePassword enforces the password policy: 8..128 chars, at least one
-// letter and one digit.
+// maxPasswordBytes bounds the memory cost of hashing a hostile multi-megabyte
+// input even when it uses few runes.
+const maxPasswordBytes = 512
+
+// ValidatePassword enforces the password policy: 8..128 characters (counted as
+// Unicode code points, not bytes), at least one letter and one digit.
 func ValidatePassword(p string) error {
-	if len(p) < 8 || len(p) > 128 {
+	n := utf8.RuneCountInString(p)
+	if n < 8 || n > 128 {
 		return fmt.Errorf("password must be between 8 and 128 characters")
+	}
+	if len(p) > maxPasswordBytes {
+		return fmt.Errorf("password must be at most %d bytes", maxPasswordBytes)
 	}
 	var letter, digit bool
 	for _, r := range p {
 		switch {
-		case r >= '0' && r <= '9':
+		case unicode.IsDigit(r):
 			digit = true
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+		case unicode.IsLetter(r):
 			letter = true
 		}
 	}
